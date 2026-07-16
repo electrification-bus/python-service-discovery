@@ -20,3 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validation` extra (`jsonschema`).
 - Percent-encoded topic derivation, freshness helpers (`age_seconds`,
   `is_stale`), and active/removed (tombstone) record states.
+- `ServiceResolver`: subscribes to a v2 discovery bus via `ebus-mqtt-client`,
+  keeps a fresh in-memory view honoring tombstones, and resolves a target
+  service to a reachable endpoint by ordering candidates routable-first and
+  TCP-probing each (bound to the record's interface). An unreachable IPv4 (e.g.
+  an APIPA lease) simply falls through to a working IPv6 -- no family special-casing.
+- `service-discovery` CLI (`dump` / `watch` / `resolve` / `validate`) for
+  inspecting and resolving a bus and validating records against the schema.

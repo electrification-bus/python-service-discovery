@@ -123,3 +123,11 @@ def test_staleness_by_ttl():
     assert (
         _record(ttl_seconds=None).is_stale(now=datetime(2030, 1, 1, tzinfo=timezone.utc)) is False
     )
+
+
+def test_scope_preference_other_before_link_local():
+    # A potentially-routable OTHER address (e.g. CGNAT 100.64/10) is tried before
+    # a link-local address, which is only reachable on its own interface.
+    cgnat = Address.parse("100.64.0.1")
+    assert cgnat.scope is AddressScope.OTHER
+    assert cgnat.preference < Address.parse("fe80::1").preference

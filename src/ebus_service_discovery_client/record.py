@@ -49,8 +49,10 @@ _SCOPE_PREFERENCE = {
     AddressScope.GLOBAL: 0,
     AddressScope.PRIVATE: 1,
     AddressScope.UNIQUE_LOCAL: 1,
-    AddressScope.LINK_LOCAL: 2,
-    AddressScope.OTHER: 3,
+    # OTHER (e.g. CGNAT 100.64/10) is potentially routable, so try it before a
+    # link-local address, which is only reachable on its own interface.
+    AddressScope.OTHER: 2,
+    AddressScope.LINK_LOCAL: 3,
     AddressScope.LOOPBACK: 4,
     AddressScope.UNSPECIFIED: 5,
 }

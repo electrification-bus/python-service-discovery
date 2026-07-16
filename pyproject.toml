@@ -38,6 +38,9 @@ dependencies = [
 validation = ["jsonschema>=4.0"]
 dev = ["pytest", "ruff>=0.15.0", "jsonschema>=4.0"]
 
+[project.scripts]
+service-discovery = "ebus_service_discovery_client.cli:main"
+
 [project.urls]
 Homepage = "https://ebus.energy"
 Repository = "https://github.com/electrification-bus/python-service-discovery-client"
