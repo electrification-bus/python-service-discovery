@@ -14,7 +14,7 @@ This library is the **consumer side plus the shared wire contract**: the record 
 - [CLI usage](#cli-usage) — `dump` / `watch` / `resolve` / `validate`, plus `--json`
 - [Releasing](#releasing) · [Contributing](#contributing) · [License](#license)
 
-> **Status: alpha.** The API and the v2 contract may still shift before `1.0`.
+> **Status: alpha.** The API and the v1 contract may still shift before `1.0`.
 
 ## Why
 
@@ -38,19 +38,19 @@ Requires Python 3.10+. Depends on [`ebus-mqtt-client`](https://github.com/electr
 
 ## The contract
 
-The wire contract is what a publisher and every consumer agree on. It is versioned (`v2`) and specified normatively by [`record.schema.json`](src/ebus_service_discovery_client/record.schema.json) (JSON Schema draft 2020-12). This section is the human-readable version.
+The wire contract is what a publisher and every consumer agree on. It is versioned (`v1`) and specified normatively by [`record.schema.json`](src/ebus_service_discovery_client/record.schema.json) (JSON Schema draft 2020-12). This section is the human-readable version.
 
 ### Topic
 
 Each record is published as a **retained** message on:
 
 ```
-{base}/v2/{service_type}/{interface}/{percent_encoded_instance}
+{base}/v1/{service_type}/{interface}/{percent_encoded_instance}
 ```
 
 | Segment | Meaning |
 |---|---|
-| `{base}` | Deployment topic root. Default `local/mdns/discovery` (so the full base is `local/mdns/discovery/v2`). |
+| `{base}` | Deployment topic root. Default `local/mdns/discovery` (so the full base is `local/mdns/discovery/v1`). |
 | `{service_type}` | DNS-SD service type, e.g. `_http._tcp`. |
 | `{interface}` | The network interface the advertisement was observed on, e.g. `eth0`. The record's addresses are the candidates reachable **via this interface**. |
 | `{percent_encoded_instance}` | The DNS-SD **service instance** label, percent-encoded so an arbitrary UTF-8 label (spaces, `/`, unicode) is a single safe topic segment. |
@@ -61,7 +61,7 @@ Keying by **instance** (not hostname) is deliberate: DNS-SD identity lives in th
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `schema_version` | int (`2`) | yes | Contract major version. |
+| `schema_version` | int (`1`) | yes | Contract major version. |
 | `service_type` | string | yes | DNS-SD service type. |
 | `instance_name` | string | yes | The unencoded DNS-SD instance label (the topic carries a percent-encoded copy). |
 | `hostname` | string | yes | SRV target hostname, e.g. `host-1234.local`. |
@@ -92,7 +92,7 @@ Active record:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "service_type": "_http._tcp",
   "instance_name": "Example Device 42",
   "hostname": "host-1234.local",
@@ -174,7 +174,7 @@ Constructor options:
 
 | Option | Default | Effect |
 |---|---|---|
-| `base` | `local/mdns/discovery/v2` | Topic base to subscribe under. |
+| `base` | `local/mdns/discovery/v1` | Topic base to subscribe under. |
 | `probe_timeout` | `5.0` | Per-candidate TCP connect timeout (seconds). |
 | `prefer_family` | `None` | `AddressFamily.IPV4`/`IPV6` as a tie-breaker (never overrides scope). |
 | `interface_priority` | `[]` | Ordered interface names to prefer, e.g. `["eth1", "eth0", "wlan0"]`. |
@@ -200,7 +200,7 @@ Installing the package provides the `service-discovery` command. Global options 
 service-discovery [--host H] [--port P] [--base B] [--json] <command> ...
 #   --host  MQTT broker host   (default 127.0.0.1)
 #   --port  MQTT broker port   (default 1883)
-#   --base  topic base         (default local/mdns/discovery/v2)
+#   --base  topic base         (default local/mdns/discovery/v1)
 #   --json  machine-readable output for jq (see below)
 ```
 
@@ -231,7 +231,7 @@ service-discovery watch _http._tcp     # Ctrl-C to stop
 
 ```
 20:48:17 ACTIVE   _http._tcp/eth0/Example Device 42  [192.168.1.10,fe80::1]
-20:49:02 REMOVED  local/mdns/discovery/v2/_http._tcp/eth0/Example%20Device%2042
+20:49:02 REMOVED  local/mdns/discovery/v1/_http._tcp/eth0/Example%20Device%2042
 ```
 
 ### `resolve` — reachable endpoint for a service
@@ -298,7 +298,7 @@ A `dump` element looks like:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "service_type": "_http._tcp",
   "instance_name": "Example Device 42",
   "hostname": "host-1234.local",

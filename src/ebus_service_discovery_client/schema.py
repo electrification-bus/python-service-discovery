@@ -1,4 +1,4 @@
-"""Access to the bundled v2 record JSON Schema and optional validation."""
+"""Access to the bundled v1 record JSON Schema and optional validation."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def load_schema() -> dict[str, Any]:
 
 
 def validate_record(record: dict[str, Any]) -> None:
-    """Validate a record dict against the v2 schema; raise on invalid.
+    """Validate a record dict against the v1 schema; raise on invalid.
 
     Requires the optional ``validation`` extra (``jsonschema``). Kept optional
     so a constrained build can ship the model without a validator.

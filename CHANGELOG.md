@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Record` and `Address` model for the v2 mDNS/DNS-SD service-discovery contract.
+- `Record` and `Address` model for the v1 mDNS/DNS-SD service-discovery contract.
   Addresses are carried raw on the wire; scope / APIPA / link-local classification
   and reachability-preference ordering are derived client-side from the address
   value so the taxonomy can evolve without a contract change.
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validation` extra (`jsonschema`).
 - Percent-encoded topic derivation, freshness helpers (`age_seconds`,
   `is_stale`), and active/removed (tombstone) record states.
-- `ServiceResolver`: subscribes to a v2 discovery bus via `ebus-mqtt-client`,
+- `ServiceResolver`: subscribes to a v1 discovery bus via `ebus-mqtt-client`,
   keeps a fresh in-memory view honoring tombstones, and resolves a target
   service to a reachable endpoint by ordering candidates routable-first and
   TCP-probing each (bound to the record's interface). An unreachable IPv4 (e.g.

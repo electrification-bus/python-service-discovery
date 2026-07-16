@@ -81,7 +81,7 @@ def test_validate_file_valid(tmp_path, capsys):
 
 def test_validate_file_invalid(tmp_path, capsys):
     p = tmp_path / "bad.json"
-    p.write_text(json.dumps({"schema_version": 2, "service_type": "_x._tcp"}))  # missing required
+    p.write_text(json.dumps({"schema_version": 1, "service_type": "_x._tcp"}))  # missing required
     assert main(["validate", "--file", str(p)]) == 1
     assert "INVALID" in capsys.readouterr().out
 
@@ -131,7 +131,7 @@ def test_validate_json_file_output(tmp_path, capsys):
         json.dumps(
             [
                 _record().to_dict(),
-                {"schema_version": 2, "service_type": "_x._tcp"},  # invalid
+                {"schema_version": 1, "service_type": "_x._tcp"},  # invalid
             ]
         )
     )

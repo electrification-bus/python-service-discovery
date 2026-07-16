@@ -1,4 +1,4 @@
-"""Command-line tools for inspecting and resolving a v2 service-discovery bus.
+"""Command-line tools for inspecting and resolving a v1 service-discovery bus.
 
 Subcommands: ``dump`` (snapshot the retained bus), ``watch`` (live add/update/
 remove), ``resolve`` (find a reachable endpoint for a service), ``validate``
@@ -274,7 +274,7 @@ def cmd_validate(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="service-discovery",
-        description="Inspect and resolve a v2 mDNS/DNS-SD service-discovery bus over MQTT.",
+        description="Inspect and resolve a v1 mDNS/DNS-SD service-discovery bus over MQTT.",
     )
     p.add_argument(
         "--host", default=DEFAULT_HOST, help=f"MQTT broker host (default {DEFAULT_HOST})"

@@ -1,4 +1,4 @@
-"""Subscribe to a v2 service-discovery bus and resolve a reachable address.
+"""Subscribe to a v1 service-discovery bus and resolve a reachable address.
 
 The resolver keeps a fresh in-memory view of active ``Record``s (dropping
 tombstones) and resolves a target service to a reachable endpoint by ordering
@@ -54,7 +54,7 @@ class Resolution:
 
 
 class ServiceResolver:
-    """A live view of a v2 discovery bus, with reachable-address resolution.
+    """A live view of a v1 discovery bus, with reachable-address resolution.
 
     Pass a started/connected ``ebus_mqtt_client.MqttClient``; the resolver only
     subscribes (the caller owns the connection lifecycle). Records can also be

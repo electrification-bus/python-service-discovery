@@ -78,7 +78,7 @@ def test_candidate_ordering_prefers_routable_over_link_local():
 
 def test_topic_percent_encodes_instance():
     rec = _record(instance_name="Example Device 42")
-    assert rec.topic() == "local/mdns/discovery/v2/_example._tcp/eth0/Example%20Device%2042"
+    assert rec.topic() == "local/mdns/discovery/v1/_example._tcp/eth0/Example%20Device%2042"
     assert rec.topic(base="x/y") == "x/y/_example._tcp/eth0/Example%20Device%2042"
 
 

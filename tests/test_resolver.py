@@ -52,7 +52,7 @@ def test_watch_subscribes_to_service_filter():
     mqtt = FakeMqtt()
     r = ServiceResolver(mqtt)
     r.watch("_example._tcp")
-    assert "local/mdns/discovery/v2/_example._tcp/+/+" in mqtt.subs
+    assert "local/mdns/discovery/v1/_example._tcp/+/+" in mqtt.subs
     r.watch("_example._tcp")  # idempotent
     assert len(mqtt.subs) == 1
 
@@ -80,13 +80,13 @@ def test_on_message_removed_state_drops():
 
 def test_on_message_bad_payload_ignored():
     r = _resolver()
-    r._on_message("local/mdns/discovery/v2/_example._tcp/eth0/Dev%201", b"{not json")
+    r._on_message("local/mdns/discovery/v1/_example._tcp/eth0/Dev%201", b"{not json")
     assert r.records() == []
 
 
 def test_key_from_topic_percent_decode():
     r = _resolver()
-    key = r._key_from_topic("local/mdns/discovery/v2/_example._tcp/eth0/Dev%20One")
+    key = r._key_from_topic("local/mdns/discovery/v1/_example._tcp/eth0/Dev%20One")
     assert key == ("_example._tcp", "eth0", "Dev One")
     assert r._key_from_topic("some/other/topic") is None
 

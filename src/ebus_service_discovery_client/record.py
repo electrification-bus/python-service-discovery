@@ -17,8 +17,8 @@ from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
-SCHEMA_VERSION = 2
-DEFAULT_TOPIC_BASE = "local/mdns/discovery/v2"
+SCHEMA_VERSION = 1
+DEFAULT_TOPIC_BASE = "local/mdns/discovery/v1"
 
 _ULA_NET = ipaddress.ip_network("fc00::/7")
 

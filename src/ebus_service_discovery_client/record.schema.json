@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ebus.energy/schemas/service-discovery/v2/record.json",
-  "title": "Service Discovery Record (v2)",
-  "description": "A single mDNS/DNS-SD service instance advertisement as observed on one network interface, published (retained) to {base}/v2/{service_type}/{interface}/{percent_encoded_instance}. Address classification (scope, APIPA, link-local, ...) is a derived, client-side concern computed from the address value and is deliberately NOT on the wire.",
+  "$id": "https://ebus.energy/schemas/service-discovery/v1/record.json",
+  "title": "Service Discovery Record (v1)",
+  "description": "A single mDNS/DNS-SD service instance advertisement as observed on one network interface, published (retained) to {base}/v1/{service_type}/{interface}/{percent_encoded_instance}. Address classification (scope, APIPA, link-local, ...) is a derived, client-side concern computed from the address value and is deliberately NOT on the wire.",
   "type": "object",
   "unevaluatedProperties": false,
   "required": [
@@ -21,8 +21,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 2,
-      "description": "Contract major version. Redundant with the /v2/ topic segment, by design."
+      "const": 1,
+      "description": "Contract major version. Redundant with the /v1/ topic segment, by design."
     },
     "service_type": {
       "type": "string",
