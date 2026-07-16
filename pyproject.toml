@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ebus-service-discovery-client"
+# Single source of truth: src/ebus_service_discovery_client/__init__.py's
+# __version__ (read dynamically below, and by setup.py's legacy path). Bump it
+# in ONE place; a publish.yml guard fails the release if the git tag disagrees.
+dynamic = ["version"]
+description = "Client and shared model for an mDNS/DNS-SD service-discovery bus over MQTT: subscribe to advertisements, honor freshness/tombstones, and resolve a reachable address per interface"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "Clark Communications Corporation"}
+]
+keywords = ["mdns", "dns-sd", "zeroconf", "service-discovery", "mqtt", "iot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "ebus-mqtt-client>=0.1.7",
+]
+
+[project.optional-dependencies]
+# JSON Schema validation of records (CLI `validate`, and strict callers). Kept
+# optional so a constrained build (e.g. Yocto) can omit it without a hard
+# dependency; the record model round-trips without it.
+validation = ["jsonschema>=4.0"]
+dev = ["pytest", "ruff>=0.15.0", "jsonschema>=4.0"]
+
+[project.urls]
+Homepage = "https://ebus.energy"
+Repository = "https://github.com/electrification-bus/python-service-discovery-client"
+Issues = "https://github.com/electrification-bus/python-service-discovery-client/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "ebus_service_discovery_client.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ebus_service_discovery_client = ["record.schema.json", "py.typed"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".beads"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501", # line-too-long (handled by formatter)
+    "B008", # do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # allow assert False in tests

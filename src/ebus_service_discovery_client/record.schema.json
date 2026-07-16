@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ebus.energy/schemas/service-discovery/v2/record.json",
+  "title": "Service Discovery Record (v2)",
+  "description": "A single mDNS/DNS-SD service instance advertisement as observed on one network interface, published (retained) to {base}/v2/{service_type}/{interface}/{percent_encoded_instance}. Address classification (scope, APIPA, link-local, ...) is a derived, client-side concern computed from the address value and is deliberately NOT on the wire.",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "required": [
+    "schema_version",
+    "service_type",
+    "instance_name",
+    "hostname",
+    "interface",
+    "port",
+    "addresses",
+    "txt",
+    "state",
+    "first_seen",
+    "last_seen"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Contract major version. Redundant with the /v2/ topic segment, by design."
+    },
+    "service_type": {
+      "type": "string",
+      "pattern": "^_[A-Za-z0-9-]+\\._(tcp|udp)$",
+      "description": "DNS-SD service type, e.g. _http._tcp or _ipp._tcp."
+    },
+    "instance_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "DNS-SD service instance label (unencoded UTF-8). The topic segment carries a percent-encoded form of this string."
+    },
+    "hostname": {
+      "type": "string",
+      "minLength": 1,
+      "description": "SRV target hostname, e.g. host-1234.local."
+    },
+    "interface": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Network interface the advertisement was observed on, e.g. eth0. The addresses are the candidates reachable via THIS interface (bind with SO_BINDTODEVICE)."
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "SRV port as advertised. A client may deliberately use a different port than advertised."
+    },
+    "addresses": {
+      "type": "array",
+      "description": "The CURRENT set of addresses advertised for this instance on this interface. Reflects present reality only; addresses are never carried forward. May legitimately be empty transiently, or contain only IPv6 (or only link-local) entries; consumers must not drop IPv6-only records.",
+      "items": { "$ref": "#/$defs/address" }
+    },
+    "txt": {
+      "type": "object",
+      "description": "DNS-SD TXT record key/values (RFC 6763). Keys and values are strings.",
+      "additionalProperties": { "type": "string" }
+    },
+    "state": {
+      "enum": ["active", "removed"],
+      "description": "active = live advertisement; removed = tombstone (goodbye / TTL expiry / browse ItemRemove observed). A removed record carries the full last-known fields plus removed_at."
+    },
+    "first_seen": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When (service_type, interface, instance) was first observed. ISO 8601 UTC."
+    },
+    "last_seen": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the advertisement was most recently confirmed. Authoritative freshness; age = now - last_seen. ISO 8601 UTC."
+    },
+    "ttl_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Advertised mDNS record TTL (or the publisher's expected refresh window). Lets a client judge staleness before a tombstone arrives."
+    },
+    "removed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the record was tombstoned. Present if and only if state == removed. ISO 8601 UTC."
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["address", "family"],
+      "properties": {
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Literal IP address. Link-local IPv6 (fe80::/10) is published without a zone id; a client binds via the record's interface. Scope/APIPA/link-local classification is derived client-side from this value."
+        },
+        "family": {
+          "enum": ["ipv4", "ipv6"],
+          "description": "Address family. Derivable from the literal, kept explicit for readability."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "removed" } } },
+      "then": { "required": ["removed_at"] },
+      "else": { "not": { "required": ["removed_at"] } }
+    }
+  ]
+}

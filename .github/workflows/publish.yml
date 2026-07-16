@@ -1,0 +1,42 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/ -v
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      # Refuse to publish an artifact whose version disagrees with the tag.
+      - name: Verify tag matches package version
+        run: |
+          pkg_version="v$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/ebus_service_discovery_client/__init__.py").read_text()).group(1))')"
+          echo "tag=${GITHUB_REF_NAME} package=${pkg_version}"
+          test "${pkg_version}" = "${GITHUB_REF_NAME}"
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          print-hash: true
