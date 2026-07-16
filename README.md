@@ -11,7 +11,7 @@ This library is the **consumer side plus the shared wire contract**: the record 
 - [Install](#install)
 - [The contract](#the-contract) — topic, record schema, tombstones, freshness
 - [Library usage](#library-usage) — model, resolver, validation
-- [CLI usage](#cli-usage) — `dump` / `watch` / `resolve` / `validate`
+- [CLI usage](#cli-usage) — `dump` / `watch` / `resolve` / `validate`, plus `--json`
 - [Releasing](#releasing) · [Contributing](#contributing) · [License](#license)
 
 > **Status: alpha.** The API and the v2 contract may still shift before `1.0`.
@@ -197,11 +197,14 @@ schema = load_schema()         # the bundled draft 2020-12 schema as a dict
 Installing the package provides the `service-discovery` command. Global options select the broker and topic base:
 
 ```
-service-discovery [--host H] [--port P] [--base B] <command> ...
+service-discovery [--host H] [--port P] [--base B] [--json] <command> ...
 #   --host  MQTT broker host   (default 127.0.0.1)
 #   --port  MQTT broker port   (default 1883)
 #   --base  topic base         (default local/mdns/discovery/v2)
+#   --json  machine-readable output for jq (see below)
 ```
+
+`--json` is global and precedes the subcommand (`service-discovery --json dump ...`). Every command below shows its default human-readable output; the [`--json` section](#--json--machine-readable-output) shows the machine-readable form.
 
 ### `dump` — snapshot the retained bus
 
@@ -257,6 +260,63 @@ service-discovery validate                        # validate live records off th
 ```
 
 Exit code is non-zero if any record is invalid.
+
+### `--json` — machine-readable output
+
+The global `--json` flag switches every command to structured output you can pipe into [`jq`](https://jqlang.github.io/jq/). Exit codes are unchanged. The shape per command:
+
+| Command | `--json` output |
+|---|---|
+| `dump` | A pretty-printed JSON **array** of records. |
+| `watch` | **Newline-delimited** JSON (one event object per line), for streaming. |
+| `resolve` | A single JSON **object**, or `null` when nothing is reachable. |
+| `validate` | A JSON **array** of `{ "index", "valid", "error" }` results. |
+
+Each `dump`/`watch` record is the wire record **enriched for debugging**: the schema fields plus a derived `scope` on every address, plus record-level `age_seconds` and `is_stale`. (This debug shape is a superset of the wire contract; do not treat the extra keys as part of it.)
+
+```bash
+# every address the bus knows, one row per (instance, address), with its scope:
+service-discovery --json dump | jq -r '
+  .[] | .instance_name as $n | .addresses[] | "\($n)\t\(.address)\t\(.scope)"'
+
+# only instances a resolver would consider stale:
+service-discovery --json dump | jq '[.[] | select(.is_stale)] | map(.instance_name)'
+
+# resolve and hand the endpoint straight to curl:
+url=$(service-discovery --json resolve _http._tcp --match id=abc123 \
+       | jq -r 'if . then "http://\(.host):\(.port)" else empty end')
+[ -n "$url" ] && curl -sS "$url"
+
+# stream live changes as ndjson (Ctrl-C to stop):
+service-discovery --json watch _http._tcp | jq -c '{ts, verb, topic}'
+
+# CI gate: fail if any retained record is invalid
+service-discovery --json validate | jq -e 'all(.valid)' > /dev/null
+```
+
+A `dump` element looks like:
+
+```json
+{
+  "schema_version": 2,
+  "service_type": "_http._tcp",
+  "instance_name": "Example Device 42",
+  "hostname": "host-1234.local",
+  "interface": "eth0",
+  "port": 80,
+  "addresses": [
+    { "address": "192.168.1.10", "family": "ipv4", "scope": "private" },
+    { "address": "fe80::1", "family": "ipv6", "scope": "link-local" }
+  ],
+  "txt": { "id": "abc123" },
+  "state": "active",
+  "first_seen": "2026-01-01T00:00:00Z",
+  "last_seen": "2026-01-01T00:05:00Z",
+  "ttl_seconds": 120,
+  "age_seconds": 300.0,
+  "is_stale": false
+}
+```
 
 ## Releasing
 

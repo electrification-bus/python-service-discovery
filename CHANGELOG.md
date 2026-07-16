@@ -27,3 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an APIPA lease) simply falls through to a working IPv6 -- no family special-casing.
 - `service-discovery` CLI (`dump` / `watch` / `resolve` / `validate`) for
   inspecting and resolving a bus and validating records against the schema.
+  A global `--json` flag switches every command to machine-readable output for
+  `jq` (arrays for `dump`/`validate`, newline-delimited events for `watch`, a
+  single object or `null` for `resolve`); `dump`/`watch` records are enriched
+  with a derived per-address `scope` and record-level `age_seconds`/`is_stale`.

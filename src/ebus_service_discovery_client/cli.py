@@ -2,9 +2,10 @@
 
 Subcommands: ``dump`` (snapshot the retained bus), ``watch`` (live add/update/
 remove), ``resolve`` (find a reachable endpoint for a service), ``validate``
-(check records against the bundled JSON Schema). The MQTT client is imported
-lazily inside the commands that need a broker, so the pure formatters remain
-importable and testable without one.
+(check records against the bundled JSON Schema). ``--json`` switches every
+command to machine-readable output for ``jq`` post-processing. The MQTT client
+is imported lazily inside the commands that need a broker, so the pure
+formatters remain importable and testable without one.
 """
 
 from __future__ import annotations
@@ -73,6 +74,33 @@ def render_resolution(res: Resolution | None) -> str:
     )
 
 
+def record_to_debug_json(record: Record, now: datetime | None = None) -> dict:
+    """The wire record plus derived fields (per-address ``scope``, ``age_seconds``,
+    ``is_stale``) for ``--json`` output. Not the wire contract -- a debug view."""
+    now = now or datetime.now(timezone.utc)
+    d = record.to_dict()
+    d["age_seconds"] = record.age_seconds(now)
+    d["is_stale"] = record.is_stale(now)
+    for wire, addr in zip(d["addresses"], record.addresses, strict=True):
+        wire["scope"] = addr.scope.value
+    return d
+
+
+def resolution_to_json(res: Resolution | None) -> dict | None:
+    if res is None:
+        return None
+    return {
+        "host": res.host,
+        "port": res.port,
+        "interface": res.interface,
+        "address": res.address.address,
+        "family": res.address.family.value,
+        "scope": res.address.scope.value,
+        "service_type": res.record.service_type,
+        "instance_name": res.record.instance_name,
+    }
+
+
 def _match_from_arg(spec: str | None):
     """Turn a `key=value` TXT filter into a Record predicate."""
     if not spec:
@@ -126,7 +154,10 @@ def cmd_dump(args) -> int:
     )
     if args.interface:
         records = [r for r in records if r.interface == args.interface]
-    print(render_tree(records))
+    if args.json:
+        print(json.dumps([record_to_debug_json(r) for r in records], indent=2))
+    else:
+        print(render_tree(records))
     return 0
 
 
@@ -134,18 +165,36 @@ def cmd_watch(args) -> int:
     from ebus_mqtt_client import MqttClient
 
     def handler(topic, payload):
-        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        if not payload or not bytes(payload).strip():
+        now = datetime.now(timezone.utc)
+        removed = not payload or not bytes(payload).strip()
+        rec = None
+        if not removed:
+            try:
+                rec = Record.from_json(bytes(payload))
+            except Exception:
+                rec = None
+        if args.json:
+            event = {"ts": now.isoformat().replace("+00:00", "Z"), "topic": topic}
+            if removed:
+                event["verb"] = "removed"
+            elif rec is None:
+                event["verb"] = "unparseable"
+            else:
+                event["verb"] = "removed" if rec.is_removed else "active"
+                event["record"] = record_to_debug_json(rec, now)
+            print(json.dumps(event))
+            return
+        ts = now.strftime("%H:%M:%S")
+        if removed:
             print(f"{ts} REMOVED  {topic}")
-            return
-        try:
-            rec = Record.from_json(bytes(payload))
-        except Exception:
+        elif rec is None:
             print(f"{ts} BADMSG   {topic}")
-            return
-        verb = "REMOVED" if rec.is_removed else "ACTIVE"
-        addrs = ",".join(a.address for a in rec.addresses)
-        print(f"{ts} {verb:8} {rec.service_type}/{rec.interface}/{rec.instance_name}  [{addrs}]")
+        else:
+            verb = "REMOVED" if rec.is_removed else "ACTIVE"
+            addrs = ",".join(a.address for a in rec.addresses)
+            print(
+                f"{ts} {verb:8} {rec.service_type}/{rec.interface}/{rec.instance_name}  [{addrs}]"
+            )
 
     mqtt = MqttClient(_CLIENT_ID, args.host, args.port)
     mqtt.subscribe(_service_pattern(args.base, args.service_type), param=handler)
@@ -170,7 +219,10 @@ def cmd_resolve(args) -> int:
     time.sleep(args.window)
     res = resolver.resolve(args.service_type, _match_from_arg(args.match), port=args.probe_port)
     mqtt.stop()
-    print(render_resolution(res))
+    if args.json:
+        print(json.dumps(resolution_to_json(res)))
+    else:
+        print(render_resolution(res))
     return 0 if res is not None else 1
 
 
@@ -182,32 +234,40 @@ def cmd_validate(args) -> int:
     else:
         from ebus_mqtt_client import MqttClient
 
-        records = {}
+        collected: dict[str, dict] = {}
 
         def handler(topic, payload):
             if payload and bytes(payload).strip():
                 try:
-                    records[topic] = json.loads(bytes(payload))
+                    collected[topic] = json.loads(bytes(payload))
                 except json.JSONDecodeError:
-                    records[topic] = {"__unparseable__": True}
+                    collected[topic] = {"__unparseable__": True}
 
         mqtt = MqttClient(_CLIENT_ID, args.host, args.port)
         mqtt.subscribe(f"{args.base}/#", param=handler)
         mqtt.start()
         time.sleep(args.window)
         mqtt.stop()
-        records = list(records.values())
+        records = list(collected.values())
 
-    errors = 0
+    results = []
     for i, rec in enumerate(records):
         try:
             validate_record(rec)
-            print(f"[{i}] valid")
+            results.append({"index": i, "valid": True, "error": None})
         except Exception as exc:
-            errors += 1
-            first = str(exc).splitlines()[0]
-            print(f"[{i}] INVALID: {first}")
-    print(f"{len(records)} record(s), {errors} invalid")
+            results.append({"index": i, "valid": False, "error": str(exc).splitlines()[0]})
+    errors = sum(1 for r in results if not r["valid"])
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            if r["valid"]:
+                print(f"[{r['index']}] valid")
+            else:
+                print(f"[{r['index']}] INVALID: {r['error']}")
+        print(f"{len(records)} record(s), {errors} invalid")
     return 1 if errors else 0
 
 
@@ -223,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         "--port", type=int, default=DEFAULT_PORT, help=f"MQTT broker port (default {DEFAULT_PORT})"
     )
     p.add_argument("--base", default=DEFAULT_TOPIC_BASE, help="discovery topic base")
+    p.add_argument("--json", action="store_true", help="machine-readable output (for jq)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("dump", help="snapshot the retained bus as a tree")

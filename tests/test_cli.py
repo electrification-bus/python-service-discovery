@@ -8,8 +8,10 @@ from ebus_service_discovery_client.cli import (
     _format_age,
     _match_from_arg,
     main,
+    record_to_debug_json,
     render_resolution,
     render_tree,
+    resolution_to_json,
 )
 from ebus_service_discovery_client.resolver import Resolution
 
@@ -89,6 +91,56 @@ def test_validate_file_list(tmp_path, capsys):
     p.write_text(json.dumps([_record().to_dict(), _record(instance_name="Dev 2").to_dict()]))
     assert main(["validate", "--file", str(p)]) == 0
     assert "2 record(s), 0 invalid" in capsys.readouterr().out
+
+
+def test_record_to_debug_json():
+    d = record_to_debug_json(_record(), now=NOW)
+    # wire fields survive
+    assert d["service_type"] == "_example._tcp"
+    assert d["instance_name"] == "Dev 1"
+    # derived fields added
+    assert d["age_seconds"] == 300.0  # last_seen 00:05, now 00:10
+    assert d["is_stale"] is True  # ttl 120s exceeded
+    # per-address scope classification is injected into each wire address
+    scopes = {a["address"]: a["scope"] for a in d["addresses"]}
+    assert scopes == {"192.168.1.10": "private", "fe80::1": "link-local"}
+    # the wire address keys are untouched otherwise
+    assert all("family" in a for a in d["addresses"])
+
+
+def test_resolution_to_json():
+    rec = _record()
+    res = Resolution(rec, Address.parse("fe80::1"), "eth0", 443)
+    d = resolution_to_json(res)
+    assert d == {
+        "host": "[fe80::1%eth0]",  # link-local host is zone-qualified
+        "port": 443,
+        "interface": "eth0",
+        "address": "fe80::1",
+        "family": "ipv6",
+        "scope": "link-local",
+        "service_type": "_example._tcp",
+        "instance_name": "Dev 1",
+    }
+    assert resolution_to_json(None) is None
+
+
+def test_validate_json_file_output(tmp_path, capsys):
+    p = tmp_path / "recs.json"
+    p.write_text(
+        json.dumps(
+            [
+                _record().to_dict(),
+                {"schema_version": 2, "service_type": "_x._tcp"},  # invalid
+            ]
+        )
+    )
+    # global --json precedes the subcommand
+    assert main(["--json", "validate", "--file", str(p)]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out[0] == {"index": 0, "valid": True, "error": None}
+    assert out[1]["index"] == 1 and out[1]["valid"] is False
+    assert out[1]["error"]  # a non-empty message
 
 
 def test_main_requires_subcommand():
