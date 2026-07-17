@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-17
+
+### Fixed
+
+- The `service-discovery` console script is now declared in `setup.py`'s `entry_points` as well as `pyproject.toml`'s `[project.scripts]`. setuptools 59.5.0 (pinned in Yocto kirkstone) ignores the PEP 621 entry-point tables, so the legacy build previously produced a wheel with no console script and the CLI was not installed in a kirkstone image.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added
