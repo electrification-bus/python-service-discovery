@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-17
+
+### Added
+
+- Publisher liveness via a `{base}/$state` topic (the Homie 5 device-lifecycle state machine, borrowed as a private liveness signal): `ServiceResolver.publisher_state` and `ServiceResolver.bus_ready`. A consumer gates its trust on `bus_ready` instead of per-record age.
+- CLI surfaces the publisher `$state` as bus health in `stats`, `snapshot`, and `dump`, and shows `$state` transitions in `watch`.
+
+### Changed
+
+- Freshness is now a bus-level property (`$state`), not a per-record one. `last_seen` / `ttl_seconds` / `Record.is_stale()` are observability only: an event-driven publisher confirms a stable service once and never re-emits, so `last_seen` ages while the service is still present, and `is_stale` no longer means "gone."
+- `ServiceResolver.records()` dropped its `include_stale` parameter.
+
+### Removed
+
+- `ServiceResolver.prune_stale()` and the `include_stale` filter (footguns built on the false "stale means gone" premise). `Record.is_stale()` / `age_seconds()` are kept as observability.
+
+### Fixed
+
+- CLI `dump` / `watch` / `stats` / `validate` / `snapshot` skip `$`-prefixed topics, so `validate` no longer flags `$state` as an invalid record.
+
+## [0.2.0] - 2026-07-17
+
+### Changed
+
+- Renamed the distribution `ebus-service-discovery-client` to `ebus-service-discovery`, the import package `ebus_service_discovery_client` to `ebus_service_discovery`, and the GitHub repo `python-service-discovery-client` to `python-service-discovery`. The wire contract (schema, topic base `local/mdns/discovery/v1`, the `service-discovery` CLI command) is unchanged.
+
 ## [0.1.1] - 2026-07-16
 
 ### Added
