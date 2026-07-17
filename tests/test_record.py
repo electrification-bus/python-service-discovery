@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ebus_service_discovery_client import (
+from ebus_service_discovery import (
     Address,
     AddressFamily,
     AddressScope,

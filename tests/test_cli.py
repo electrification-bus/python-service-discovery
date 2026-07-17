@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ebus_service_discovery_client import Address, Record
-from ebus_service_discovery_client.cli import (
+from ebus_service_discovery import Address, Record
+from ebus_service_discovery.cli import (
     _format_age,
     _load_snapshot,
     _match_from_arg,
@@ -19,7 +19,7 @@ from ebus_service_discovery_client.cli import (
     resolution_to_json,
     snapshot_payload,
 )
-from ebus_service_discovery_client.resolver import Resolution
+from ebus_service_discovery.resolver import Resolution
 
 NOW = datetime(2026, 1, 1, 0, 10, 0, tzinfo=timezone.utc)
 

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from ebus_service_discovery_client import Address, AddressFamily, Record, RecordState
-from ebus_service_discovery_client.resolver import Resolution, ServiceResolver
+from ebus_service_discovery import Address, AddressFamily, Record, RecordState
+from ebus_service_discovery.resolver import Resolution, ServiceResolver
 
 
 class FakeMqtt:

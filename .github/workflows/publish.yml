@@ -32,7 +32,7 @@ jobs:
       # Refuse to publish an artifact whose version disagrees with the tag.
       - name: Verify tag matches package version
         run: |
-          pkg_version="v$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/ebus_service_discovery_client/__init__.py").read_text()).group(1))')"
+          pkg_version="v$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/ebus_service_discovery/__init__.py").read_text()).group(1))')"
           echo "tag=${GITHUB_REF_NAME} package=${pkg_version}"
           test "${pkg_version}" = "${GITHUB_REF_NAME}"
       - run: pip install build

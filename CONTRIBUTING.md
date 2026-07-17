@@ -1,6 +1,6 @@
-# Contributing to ebus-service-discovery-client
+# Contributing to ebus-service-discovery
 
-Thanks for your interest in contributing! `ebus-service-discovery-client` is the
+Thanks for your interest in contributing! `ebus-service-discovery` is the
 consumer side plus the shared contract for an mDNS/DNS-SD service-discovery bus
 carried over MQTT: a record model, its JSON Schema, and (as they land) a resolver
 and a debug CLI. It is intentionally **vendor- and product-agnostic** — it models
@@ -10,7 +10,7 @@ generic DNS-SD discovery, not any particular device or integration.
 
 ### Discussions
 
-Use [Discussions](https://github.com/electrification-bus/python-service-discovery-client/discussions) for:
+Use [Discussions](https://github.com/electrification-bus/python-service-discovery/discussions) for:
 
 - Open-ended questions about the library's design, scope, or intent.
 - Proposed changes to the wire contract (record schema, topic structure) — worth
@@ -24,7 +24,7 @@ concrete change. Aligned outcomes often turn into one or more Issues or pull req
 
 ### Issues
 
-Use [Issues](https://github.com/electrification-bus/python-service-discovery-client/issues) for actionable changes:
+Use [Issues](https://github.com/electrification-bus/python-service-discovery/issues) for actionable changes:
 
 - Bug reports with reproduction steps.
 - Concrete feature requests with a clear scope and a use case.
@@ -46,7 +46,7 @@ Pull requests are welcome.
   feature only makes sense for one product or integration, it belongs in that
   consumer, not here. When in doubt, ask in a Discussion.
 - **The wire contract is shared.** Changes to
-  [`record.schema.json`](src/ebus_service_discovery_client/record.schema.json) or
+  [`record.schema.json`](src/ebus_service_discovery/record.schema.json) or
   the topic layout affect every publisher and consumer. Prefer additive changes;
   a breaking change needs a version bump of the contract and a migration plan.
 - **Tests are required.** The suite is offline and mock-based (`pytest tests/`).
@@ -54,7 +54,7 @@ Pull requests are welcome.
 - **Keep comments to a minimum.** Write self-explanatory code; reserve comments
   for non-obvious *why* (a hidden constraint or a specific quirk).
 - **The version lives in one place.** Bump `__version__` in
-  `src/ebus_service_discovery_client/__init__.py` only — `pyproject.toml` reads it
+  `src/ebus_service_discovery/__init__.py` only — `pyproject.toml` reads it
   dynamically and `setup.py` reads it by regex, so there is nothing else to keep
   in sync. (The `setup.py` shim exists so legacy `setuptools<61` — pinned in some
   embedded builds — can build a wheel with correct metadata; its docstring explains why.)
@@ -75,7 +75,7 @@ an issue, start a discussion, or send a pull request.
 
 ## Maintenance posture
 
-`ebus-service-discovery-client` is an active alpha library. Updates and
+`ebus-service-discovery` is an active alpha library. Updates and
 maintenance, including responses to issues filed on GitHub, will take place on an
 "as time and resources permit" basis. It is maintained alongside
 [`ebus-sdk`](https://github.com/electrification-bus/python-sdk),

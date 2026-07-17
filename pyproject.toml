@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ebus-service-discovery-client"
-# Single source of truth: src/ebus_service_discovery_client/__init__.py's
+name = "ebus-service-discovery"
+# Single source of truth: src/ebus_service_discovery/__init__.py's
 # __version__ (read dynamically below, and by setup.py's legacy path). Bump it
 # in ONE place; a publish.yml guard fails the release if the git tag disagrees.
 dynamic = ["version"]
@@ -39,21 +39,21 @@ validation = ["jsonschema>=4.0"]
 dev = ["pytest", "ruff>=0.15.0", "jsonschema>=4.0"]
 
 [project.scripts]
-service-discovery = "ebus_service_discovery_client.cli:main"
+service-discovery = "ebus_service_discovery.cli:main"
 
 [project.urls]
 Homepage = "https://ebus.energy"
-Repository = "https://github.com/electrification-bus/python-service-discovery-client"
-Issues = "https://github.com/electrification-bus/python-service-discovery-client/issues"
+Repository = "https://github.com/electrification-bus/python-service-discovery"
+Issues = "https://github.com/electrification-bus/python-service-discovery/issues"
 
 [tool.setuptools.dynamic]
-version = {attr = "ebus_service_discovery_client.__version__"}
+version = {attr = "ebus_service_discovery.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-ebus_service_discovery_client = ["record.schema.json", "py.typed"]
+ebus_service_discovery = ["record.schema.json", "py.typed"]
 
 [tool.ruff]
 src = ["src"]

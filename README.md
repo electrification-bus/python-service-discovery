@@ -1,6 +1,6 @@
-# ebus-service-discovery-client
+# ebus-service-discovery
 
-[![PyPI version](https://img.shields.io/pypi/v/ebus-service-discovery-client.svg)](https://pypi.org/project/ebus-service-discovery-client/)
+[![PyPI version](https://img.shields.io/pypi/v/ebus-service-discovery.svg)](https://pypi.org/project/ebus-service-discovery/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 Client and shared model for an mDNS/DNS-SD **service-discovery bus over MQTT**. A discovery service browses the local network and publishes each advertisement as a retained MQTT record; consumers subscribe, keep a fresh view (honoring freshness and tombstones), and resolve a target service to a reachable address per interface.
@@ -29,16 +29,16 @@ So the contract is deliberately **honest and raw** — it carries the current ad
 ## Install
 
 ```bash
-pip install ebus-service-discovery-client
+pip install ebus-service-discovery
 # optional JSON-Schema validation (CLI `validate`, strict callers):
-pip install "ebus-service-discovery-client[validation]"
+pip install "ebus-service-discovery[validation]"
 ```
 
 Requires Python 3.10+. Depends on [`ebus-mqtt-client`](https://github.com/electrification-bus/ebus-mqtt-client) for MQTT transport.
 
 ## The contract
 
-The wire contract is what a publisher and every consumer agree on. It is versioned (`v1`) and specified normatively by [`record.schema.json`](src/ebus_service_discovery_client/record.schema.json) (JSON Schema draft 2020-12). This section is the human-readable version.
+The wire contract is what a publisher and every consumer agree on. It is versioned (`v1`) and specified normatively by [`record.schema.json`](src/ebus_service_discovery/record.schema.json) (JSON Schema draft 2020-12). This section is the human-readable version.
 
 ### Topic
 
@@ -120,7 +120,7 @@ Tombstone (same shape, `state: "removed"` + `removed_at`).
 `Record` and `Address` are plain dataclasses that round-trip the wire form. Address classification is derived from the address value:
 
 ```python
-from ebus_service_discovery_client import Address, Record
+from ebus_service_discovery import Address, Record
 
 rec = Record.from_json(mqtt_payload)      # bytes or str
 rec.topic()                                # -> the retained topic for this record
@@ -144,7 +144,7 @@ a.preference     # sort key: lower is tried first
 
 ```python
 from ebus_mqtt_client import MqttClient
-from ebus_service_discovery_client import ServiceResolver
+from ebus_service_discovery import ServiceResolver
 
 mqtt = MqttClient("my-consumer", "127.0.0.1", 1883)
 resolver = ServiceResolver(mqtt)
@@ -184,7 +184,7 @@ Other methods: `records(service_type=None, include_stale=True)` snapshots the cu
 ### Schema validation
 
 ```python
-from ebus_service_discovery_client import load_schema, validate_record
+from ebus_service_discovery import load_schema, validate_record
 
 validate_record(record_dict)   # raises jsonschema.ValidationError if invalid
 schema = load_schema()         # the bundled draft 2020-12 schema as a dict
@@ -382,9 +382,9 @@ A `dump` element looks like:
 
 ## Releasing
 
-The version lives in exactly one place: `__version__` in `src/ebus_service_discovery_client/__init__.py`. `pyproject.toml` reads it dynamically, the `setup.py` legacy shim reads it by regex, and the publish workflow refuses to release a tag that disagrees with it. To cut a release:
+The version lives in exactly one place: `__version__` in `src/ebus_service_discovery/__init__.py`. `pyproject.toml` reads it dynamically, the `setup.py` legacy shim reads it by regex, and the publish workflow refuses to release a tag that disagrees with it. To cut a release:
 
-1. Bump `__version__` in `src/ebus_service_discovery_client/__init__.py` (the only place).
+1. Bump `__version__` in `src/ebus_service_discovery/__init__.py` (the only place).
 2. Move the CHANGELOG's `[Unreleased]` entries under a new version heading.
 3. Commit, then tag it `v`-prefixed to match: `git tag vX.Y.Z && git push --tags`.
 
@@ -392,7 +392,7 @@ Pushing a `v*` tag runs the publish workflow, which verifies the tag equals `v$_
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for Discussions, Issues, and pull requests. The library is intentionally vendor- and product-agnostic: it models generic DNS-SD discovery, not any particular device. Changes to the wire contract ([`record.schema.json`](src/ebus_service_discovery_client/record.schema.json) or the topic layout) affect every publisher and consumer — prefer additive changes and align in a Discussion first.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for Discussions, Issues, and pull requests. The library is intentionally vendor- and product-agnostic: it models generic DNS-SD discovery, not any particular device. Changes to the wire contract ([`record.schema.json`](src/ebus_service_discovery/record.schema.json) or the topic layout) affect every publisher and consumer — prefer additive changes and align in a Discussion first.
 
 ## License
 

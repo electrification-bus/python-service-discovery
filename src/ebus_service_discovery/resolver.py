@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import unquote
 
-from ebus_service_discovery_client.record import (
+from ebus_service_discovery.record import (
     DEFAULT_TOPIC_BASE,
     Address,
     AddressFamily,

@@ -19,9 +19,9 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-from ebus_service_discovery_client.record import DEFAULT_TOPIC_BASE, Record
-from ebus_service_discovery_client.resolver import Resolution, ServiceResolver
-from ebus_service_discovery_client.schema import validate_record
+from ebus_service_discovery.record import DEFAULT_TOPIC_BASE, Record
+from ebus_service_discovery.resolver import Resolution, ServiceResolver
+from ebus_service_discovery.schema import validate_record
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 1883
