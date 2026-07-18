@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-18
+
+### Fixed
+
+- `Resolution.host` now carries a link-local IPv6 zone as its NUMERIC interface index (`[fe80::1%2]`) rather than the interface name (`[fe80::1%eth0]`). The name form was not actually URL-ready: `requests`/`urllib3 <2.0` percent-encodes the `%` and then fails `getaddrinfo` on the literal `%25eth0`, so a consumer polling a link-local-only device over HTTPS never connected (stale data plus a communication-error fault while discovery still reported success). The numeric scope works on every `urllib3`, needs no `SO_BINDTODEVICE` on the caller, and matches the scope the reachability probe already resolves via `if_nametoindex`. Falls back to the interface name if it is not local to the resolving host (a cross-host resolver).
+
 ## [0.3.1] - 2026-07-17
 
 ### Fixed

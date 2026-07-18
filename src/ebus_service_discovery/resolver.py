@@ -47,12 +47,25 @@ class Resolution:
 
     @property
     def host(self) -> str:
-        """Address in URL-host form: bracketed IPv6, zone-qualified link-local."""
+        """Address in URL-host form: bracketed IPv6, scope-qualified link-local.
+
+        A link-local address carries its zone as the NUMERIC interface index
+        (``%2``), not the interface name (``%eth0``). requests/urllib3 <2.0 cannot
+        carry a name zone through a URL (it percent-encodes the ``%`` and then
+        fails ``getaddrinfo`` on the literal ``%25eth0``), whereas a numeric scope
+        works on every urllib3 and needs no ``SO_BINDTODEVICE`` on the caller. The
+        scope matches the reachability probe, which resolves it the same way. If
+        the interface is not local to this host (e.g. a cross-host resolver) the
+        name is a best-effort fallback (no worse than before).
+        """
         ip = self.address.address
         if self.address.family is AddressFamily.IPV4:
             return ip
         if self.address.is_link_local and "%" not in ip:
-            return f"[{ip}%{self.interface}]"
+            try:
+                return f"[{ip}%{socket.if_nametoindex(self.interface)}]"
+            except OSError:
+                return f"[{ip}%{self.interface}]"
         return f"[{ip}]"
 
 

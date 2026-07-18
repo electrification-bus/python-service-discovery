@@ -205,13 +205,28 @@ def test_resolve_interface_priority():
 # --- Resolution.host -------------------------------------------------------
 
 
-def test_resolution_host_formatting():
+def test_resolution_host_formatting(monkeypatch):
     rec = _record(interface="eth0")
     assert Resolution(rec, Address.parse("192.168.1.10"), "eth0", 443).host == "192.168.1.10"
     assert (
         Resolution(rec, Address.parse("2606:4700:4700::1111"), "eth0", 443).host
         == "[2606:4700:4700::1111]"
     )
+    # A link-local address carries a NUMERIC scope index (not the interface name),
+    # so requests/urllib3 <2.0 can carry it through a URL.
+    monkeypatch.setattr("ebus_service_discovery.resolver.socket.if_nametoindex", lambda _iface: 7)
+    assert Resolution(rec, Address.parse("fe80::1"), "eth0", 443).host == "[fe80::1%7]"
+
+
+def test_resolution_host_falls_back_to_name_when_iface_not_local(monkeypatch):
+    # A cross-host resolver may see an interface name that is not local; the scope
+    # lookup then fails and we fall back to the name (no worse than before).
+    rec = _record(interface="eth0")
+
+    def _raise(_iface):
+        raise OSError("No such device")
+
+    monkeypatch.setattr("ebus_service_discovery.resolver.socket.if_nametoindex", _raise)
     assert Resolution(rec, Address.parse("fe80::1"), "eth0", 443).host == "[fe80::1%eth0]"
 
 
