@@ -114,12 +114,15 @@ def test_record_to_debug_json():
     assert all("family" in a for a in d["addresses"])
 
 
-def test_resolution_to_json():
+def test_resolution_to_json(monkeypatch):
+    # Pin the interface index so .host is deterministic regardless of whether the
+    # test host actually has an "eth0" (it is numeric where the iface exists).
+    monkeypatch.setattr("ebus_service_discovery.resolver.socket.if_nametoindex", lambda _iface: 7)
     rec = _record()
     res = Resolution(rec, Address.parse("fe80::1"), "eth0", 443)
     d = resolution_to_json(res)
     assert d == {
-        "host": "[fe80::1%eth0]",  # link-local host is zone-qualified
+        "host": "[fe80::1%7]",  # link-local host carries the numeric scope index
         "port": 443,
         "interface": "eth0",
         "address": "fe80::1",
