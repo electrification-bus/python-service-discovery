@@ -82,6 +82,22 @@ def test_record_to_instance():
     assert rec.txt["path"] == "/api/v1"  # a copy
 
 
+def test_candidates_drop_zoneless_link_local_without_interface():
+    addrs = (
+        Address.parse("fe80::1"),
+        Address.parse("fe80::2%en0"),
+        Address.parse("169.254.0.9"),
+        Address.parse("192.0.2.5"),
+    )
+    inst = ServiceInstance("_http._tcp", "Dev 1", "host-1.local", 80, addresses=addrs)
+    assert [a.address for a in inst.candidate_addresses()] == [
+        "192.0.2.5",
+        "fe80::2%en0",
+        "169.254.0.9",
+    ]
+    assert inst.addresses == addrs  # the raw addresses are kept
+
+
 # --- constants and mode -----------------------------------------------------
 
 

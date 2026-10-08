@@ -65,7 +65,7 @@ for inst in mdns.browse("_ebus._tcp", timeout=3.0):
     print(inst.instance_name, inst.server, inst.port, ebus.roles, ebus.device_ids)
 ```
 
-`browse()` returns resolved `ServiceInstance`s: service type, instance name, SRV target (`server`), port, addresses, TXT (keys lowercased) and, for a scoped IPv6 answer, the interface. An IPv4-only answer carries no interface. `Record.to_instance()` gives the same shape for a record from the bus.
+`browse()` returns resolved `ServiceInstance`s: service type, instance name, SRV target (`server`), port, addresses, TXT (keys lowercased) and, for a scoped IPv6 answer, the interface. An IPv4-only answer carries no interface. `candidate_addresses()` leaves out an IPv6 link-local address that has neither a zone nor an interface to supply one, since it cannot be connected to. `Record.to_instance()` gives the same shape for a record from the bus.
 
 ### Find a broker
 

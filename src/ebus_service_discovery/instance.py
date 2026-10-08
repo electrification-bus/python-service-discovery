@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ebus_service_discovery.record import Address
+from ebus_service_discovery.record import Address, AddressFamily
 
 
 def strip_dot(name: str) -> str:
@@ -39,8 +39,18 @@ class ServiceInstance:
     interface: str | None = None
 
     def candidate_addresses(self) -> list[Address]:
-        """Usable addresses, most-preferred first (routable before link-local)."""
+        """Usable addresses, most-preferred first (routable before link-local).
+
+        An IPv6 link-local address needs a zone to connect to, so one is
+        kept only when it carries a zone (``fe80::1%en0``) or the instance has
+        an ``interface`` to supply it.
+        """
         return sorted(
-            (a for a in self.addresses if a.is_usable_candidate),
+            (a for a in self.addresses if a.is_usable_candidate and self._connectable(a)),
             key=lambda a: a.preference,
         )
+
+    def _connectable(self, address: Address) -> bool:
+        if address.family is not AddressFamily.IPV6 or not address.is_link_local:
+            return True
+        return "%" in address.address or self.interface is not None
