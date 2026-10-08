@@ -6,12 +6,14 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Client and shared model for an mDNS/DNS-SD **service-discovery bus over MQTT**. A discovery service browses the local network and publishes each advertisement as a retained MQTT record; consumers subscribe, keep a fresh view (honoring freshness and tombstones), and resolve a target service to a reachable address per interface.
+eBus service discovery for Python, from two sources:
 
-This library is the **consumer side plus the shared wire contract**: the record model, its JSON Schema, a live-view resolver, and a debug CLI. A publisher and any number of clients share the contract described below.
+- **The discovery bus over MQTT.** A discovery service browses the local network and publishes each mDNS/DNS-SD advertisement as a retained MQTT record; consumers subscribe, keep a fresh view (honoring freshness and tombstones), and resolve a target service to a reachable address per interface. This library is the consumer side plus the shared wire contract: the record model, its JSON Schema, a live-view resolver, and a debug CLI.
+- **Direct mDNS through [`zeroconf`](https://github.com/python-zeroconf/python-zeroconf).** For device-role and controller-role clients that only need to find a broker and advertise themselves: browse, broker resolution under the eBus broker modes, and `_ebus._tcp` / `_device-info._tcp` advertising, synchronous and asyncio. No Avahi, no D-Bus, no MQTT dependency.
 
 - [Why](#why)
 - [Install](#install)
+- [Direct mDNS (zeroconf)](#direct-mdns-zeroconf): browse, find a broker, advertise, asyncio
 - [The contract](#the-contract) — topic, record schema, tombstones, freshness
 - [Library usage](#library-usage) — model, resolver, validation
 - [CLI usage](#cli-usage) — `dump` / `watch` / `resolve` / `validate` / `stats` / `snapshot` / `diff`, plus `--json`
@@ -32,12 +34,127 @@ So the contract is deliberately **honest and raw** — it carries the current ad
 ## Install
 
 ```bash
-pip install ebus-service-discovery
-# optional JSON-Schema validation (CLI `validate`, strict callers):
-pip install "ebus-service-discovery[validation]"
+pip install "ebus-service-discovery[zeroconf]"     # direct mDNS
+pip install "ebus-service-discovery[mqtt]"         # the MQTT discovery bus and the CLI
+pip install "ebus-service-discovery[validation]"   # JSON Schema validation of records
 ```
 
-Requires Python 3.10+. Depends on [`ebus-mqtt-client`](https://github.com/electrification-bus/ebus-mqtt-client) for MQTT transport.
+| Install | Adds | Provides |
+|---|---|---|
+| `ebus-service-discovery` | nothing | The record model and schema, address classification, `ServiceResolver` fed through `ingest()`, `ServiceInstance`, and the eBus vocabulary in `ebus_service_discovery.ebus` |
+| `[mqtt]` | [`ebus-mqtt-client`](https://github.com/electrification-bus/ebus-mqtt-client) | The bus source (`ServiceResolver.watch()` with an `MqttClient`) and the `service-discovery` CLI |
+| `[zeroconf]` | `zeroconf>=0.131.0` | `ebus_service_discovery.mdns` and `.mdns_async` |
+| `[validation]` | `jsonschema>=4.0` | `validate_record()` and CLI `validate` |
+
+Requires Python 3.10+. Importing `ebus_service_discovery` loads neither `zeroconf` nor `ebus_mqtt_client`; each loads only when its module is used.
+
+**Upgrading from 0.3.x:** `ebus-mqtt-client` is no longer a dependency of the base package. Install `ebus-service-discovery[mqtt]` to keep the bus source and the CLI; without it, a CLI command that needs a broker exits naming the extra. A Yocto recipe, which does not resolve extras, lists `python3-ebus-mqtt-client` (and `python3-jsonschema` for validation) in `RDEPENDS` itself.
+
+## Direct mDNS (zeroconf)
+
+The eBus framework specification requires every entity to advertise `_ebus._tcp` and `_device-info._tcp`, and an entity that does not host a broker to find one over mDNS. `ebus_service_discovery.mdns` does both with python-zeroconf.
+
+### Browse
+
+```python
+from ebus_service_discovery import mdns
+from ebus_service_discovery.ebus import parse_ebus_txt
+
+for inst in mdns.browse("_ebus._tcp", timeout=3.0):
+    ebus = parse_ebus_txt(inst.txt)
+    print(inst.instance_name, inst.server, inst.port, ebus.roles, ebus.device_ids)
+```
+
+`browse()` returns resolved `ServiceInstance`s: service type, instance name, SRV target (`server`), port, addresses, TXT (keys lowercased) and, for a scoped IPv6 answer, the interface. An IPv4-only answer carries no interface. `candidate_addresses()` leaves out an IPv6 link-local address that has neither a zone nor an interface to supply one, since it cannot be connected to. `Record.to_instance()` gives the same shape for a record from the bus.
+
+### Find a broker
+
+```python
+from ebus_mqtt_client import MqttClient
+from ebus_service_discovery import mdns
+
+base_cfg = {  # an ebus-mqtt-client config: credentials and TLS material
+    "host": "broker-1.local",
+    "port": 8883,
+    "use_tls": True,
+    "tls_ca_cert": "/path/to/ca.pem",
+    "authentication": {"type": "USER_PASS", "username": "user", "password": "secret"},
+}
+
+endpoint = mdns.find_broker("discovery-with-fallback", base_cfg=base_cfg)
+client = MqttClient.from_config(endpoint.mqtt_cfg(base_cfg), client_id="example-client")
+```
+
+`endpoint.mqtt_cfg(base_cfg)` returns a copy of `base_cfg` with only `host`, `port` and `use_tls` replaced, so the credentials and CA certificate are kept; it logs a warning if that turns `use_tls` off. The configured broker is the `url` argument (`mqtt://` or `mqtts://`) or, without one, the host of `base_cfg`.
+
+| Mode | Behavior |
+|---|---|
+| `configured-only` | Returns the configured broker. Never browses. |
+| `discovery-only` (the default when the mode is `None`) | Browses until a broker is found, or until `stop` is set or the schedule's `max_attempts` runs out (then `None`). |
+| `discovery-with-fallback` | Browses; if the first three attempts (or all of them, when `max_attempts` is fewer) find nothing, returns the configured broker. |
+
+Each attempt browses `_secure-mqtt._tcp`, `_mqtt-wss._tcp`, `_mqtt-ws._tcp` and `_mqtt._tcp` for `browse_timeout` seconds (default 3). A broker advertised under several types counts once, at its most preferred type, in the specification's order. The WebSocket types are logged but not selected, since ebus-mqtt-client connects over TCP. When TLS is configured (an `mqtts://` URL or `use_tls` in `base_cfg`), only `_secure-mqtt._tcp` is selected, so the credentials are never sent in cleartext to a plain broker that answered the multicast query. Pass `accept=` to change either. Attempts follow `RetrySchedule`: three attempts 3 s apart, then one every 30 s. The broker host is the TXT `broker` value when advertised, otherwise the SRV target. There is no reachability probe: connecting is the probe.
+
+When several distinct brokers are found, the specification leaves the choice to the implementation. `select_broker()` prefers, in `discovery-with-fallback`, a discovered broker whose host matches the configured one; otherwise the most preferred transport, then the lowest host name. It logs that it chose among several. Configure the intended broker's URL in a multi-broker deployment.
+
+### Advertise
+
+```python
+from ebus_service_discovery import mdns
+from ebus_service_discovery.ebus import HttpService, Identity
+
+identity = Identity(
+    device_ids=["example-meter-1", "example-meter-2"],  # one advertisement per host
+    roles=["device"],
+    manufacturer="Example",
+    model="EX-1",
+    serial_number="sn-0001",
+    fw_version="1.0.0",
+)
+
+with mdns.Advertiser(identity, http=HttpService(port=8080, openapi="/api/v1/openapi.yml")) as adv:
+    print("advertising", adv.instance_name, "on", adv.server)
+    ...  # run the client
+```
+
+`Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`) under one instance name, by default the host's label. If another host already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
+
+The services are advertised under the `.local` name the operating system's mDNS responder (mDNSResponder on macOS, avahi-daemon on Linux) already claims, and carry no address records: the OS responder answers the address queries for its own name, per interface. The advertiser learns that name by asking the OS responder for the reverse mapping of this host's addresses. It does not publish addresses under the OS name itself, because on macOS python-zeroconf's address records were answered on every interface and, while mDNSResponder was re-probing its name, made it rename the host to `<name>-2.local`. If an OS responder is present but does not answer, `start()` raises; with no OS responder at all, the advertiser uses `<hostname>.local` and publishes this host's addresses, after checking that no other host answers for that name. `server=` skips the detection and is published with `addresses=` (default none). Without `server=`, `addresses=` replaces this host's addresses only when there is no OS responder; under the OS name it is ignored, with a warning.
+
+On macOS a python-zeroconf instance created with `IPVersion.All` does not join the IPv4 multicast group, so the `Zeroconf` instances this library creates (and `mdns.new_zeroconf()`) use IPv4 only on macOS and both families elsewhere.
+
+### Sharing a Zeroconf instance
+
+Every `mdns` call takes an optional `zc`. Without one, a `Zeroconf` is created for the call (or for the advertiser's lifetime) and closed afterwards; a passed instance is never closed. Call `mdns` from a thread other than the instance's own event loop.
+
+### asyncio and Home Assistant
+
+`ebus_service_discovery.mdns_async` has the same operations as coroutines. Each requires the caller's `AsyncZeroconf` and never creates or closes it, which is what a Home Assistant integration must do with the shared instance:
+
+```python
+from homeassistant.components import zeroconf
+from homeassistant.exceptions import ConfigEntryNotReady
+
+from ebus_service_discovery import mdns_async
+from ebus_service_discovery.ebus import RetrySchedule
+
+async def async_setup_entry(hass, entry):
+    aiozc = await zeroconf.async_get_async_instance(hass)
+    endpoint = await mdns_async.find_broker(
+        aiozc,
+        entry.data.get("broker_mode"),
+        entry.data.get("broker_url"),
+        base_cfg=entry.data["mqtt"],
+        schedule=RetrySchedule(max_attempts=3),  # do not hold up setup indefinitely
+    )
+    if endpoint is None:
+        raise ConfigEntryNotReady("no eBus broker found")
+    advertiser = mdns_async.Advertiser(identity, aiozc)  # identity: an ebus.Identity
+    await advertiser.start()
+    entry.async_on_unload(advertiser.stop)
+```
+
+`find_broker` also takes an `asyncio.Event` as `stop`; cancelling the task ends the search too.
 
 ## The contract
 
@@ -156,7 +273,7 @@ a.preference     # sort key: lower is tried first
 
 ### The resolver (`ServiceResolver`)
 
-`ServiceResolver` keeps a live, tombstone-aware view of the bus and resolves a target service to a **reachable** endpoint. You own the MQTT connection lifecycle; the resolver only subscribes.
+The MQTT source needs the `[mqtt]` extra. `ServiceResolver` keeps a live, tombstone-aware view of the bus and resolves a target service to a **reachable** endpoint. You own the MQTT connection lifecycle; the resolver only subscribes.
 
 ```python
 from ebus_mqtt_client import MqttClient
@@ -214,7 +331,7 @@ schema = load_schema()         # the bundled draft 2020-12 schema as a dict
 
 ## CLI usage
 
-Installing the package provides the `service-discovery` command. Global options select the broker and topic base:
+Installing the package provides the `service-discovery` command; the commands that read the bus need the `[mqtt]` extra. Global options select the broker and topic base:
 
 ```
 service-discovery [--host H] [--port P] [--base B] [--json] <command> ...

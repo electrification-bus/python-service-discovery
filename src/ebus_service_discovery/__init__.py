@@ -1,3 +1,4 @@
+from ebus_service_discovery.instance import ServiceInstance
 from ebus_service_discovery.record import (
     Address,
     AddressFamily,
@@ -17,6 +18,7 @@ __all__ = [
     "Record",
     "RecordState",
     "Resolution",
+    "ServiceInstance",
     "ServiceResolver",
     "load_schema",
     "validate_record",

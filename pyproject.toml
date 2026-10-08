@@ -8,7 +8,7 @@ name = "ebus-service-discovery"
 # __version__ (read dynamically below, and by setup.py's legacy path). Bump it
 # in ONE place; a publish.yml guard fails the release if the git tag disagrees.
 dynamic = ["version"]
-description = "Client and shared model for an mDNS/DNS-SD service-discovery bus over MQTT: subscribe to advertisements, honor freshness/tombstones, and resolve a reachable address per interface"
+description = "eBus service discovery: a shared record model, an mDNS/DNS-SD discovery bus over MQTT, and direct zeroconf browse, broker resolution and advertising"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -27,16 +27,23 @@ classifiers = [
     "Topic :: System :: Networking",
     "Topic :: Software Development :: Libraries",
 ]
-dependencies = [
-    "ebus-mqtt-client>=0.1.7",
-]
+# No base dependencies: the record model, resolver core and eBus vocabulary are
+# standard library only. Each transport is an extra, so an embedded image that
+# uses only the MQTT bus never installs (or imports) zeroconf, and vice versa.
+dependencies = []
 
 [project.optional-dependencies]
+# The MQTT discovery bus source (ServiceResolver.watch with an MqttClient) and
+# the `service-discovery` CLI.
+mqtt = ["ebus-mqtt-client>=0.1.7"]
+# Direct mDNS browse, broker resolution and advertising (ebus_service_discovery.mdns
+# and .mdns_async).
+zeroconf = ["zeroconf>=0.131.0"]
 # JSON Schema validation of records (CLI `validate`, and strict callers). Kept
 # optional so a constrained build (e.g. Yocto) can omit it without a hard
 # dependency; the record model round-trips without it.
 validation = ["jsonschema>=4.0"]
-dev = ["pytest", "ruff>=0.15.0", "jsonschema>=4.0"]
+dev = ["pytest", "ruff>=0.15.0", "jsonschema>=4.0", "zeroconf>=0.131.0"]
 
 [project.scripts]
 service-discovery = "ebus_service_discovery.cli:main"
