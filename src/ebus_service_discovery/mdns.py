@@ -45,12 +45,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_BROWSE_TIMEOUT = 3.0
 
 
-def _new_zeroconf() -> Zeroconf:
+def new_zeroconf() -> Zeroconf:
+    """A ``Zeroconf`` configured as this module creates its own (see
+    ``_mdns_core.default_ip_version``); IPv4 only if IPv6 is unavailable."""
+    version = core.default_ip_version()
     try:
-        return Zeroconf(ip_version=IPVersion.All)
+        return Zeroconf(ip_version=version)
     except OSError:
+        if version is IPVersion.V4Only:
+            raise
         logger.info("reason=ipv6Unavailable,fallback=ipv4")
-        return Zeroconf()
+        return Zeroconf(ip_version=IPVersion.V4Only)
 
 
 @contextlib.contextmanager
@@ -59,7 +64,7 @@ def _zeroconf(zc: Zeroconf | None) -> Iterator[Zeroconf]:
     if zc is not None:
         yield zc
         return
-    own = _new_zeroconf()
+    own = new_zeroconf()
     try:
         yield own
     finally:
@@ -234,7 +239,7 @@ class Advertiser:
             return self
         zc = self._zc
         if zc is None:
-            zc = self._own_zc = _new_zeroconf()
+            zc = self._own_zc = new_zeroconf()
         try:
             self.server, self.instance_name, self._infos = _run(
                 zc, core.async_advertise(zc, self._plan, self._detect_timeout)

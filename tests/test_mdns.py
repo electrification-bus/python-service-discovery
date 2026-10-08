@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("zeroconf")
 
 from zeroconf import (  # noqa: E402
+    DNSAddress,
     DNSPointer,
     NonUniqueNameException,
     ServiceInfo,
@@ -375,6 +376,15 @@ def test_async_os_hostname_ignores_non_local_names():
     )
 
 
+def test_async_name_answered():
+    zc = FakeZeroconf(start_loop=False)
+    assert not asyncio.run(_mdns_core.async_name_answered(zc, "free.local.", 0.1))
+    zc.cache.entries["taken.local."] = [
+        DNSAddress("taken.local.", 1, 1, 120, ipaddress.ip_address("192.0.2.9").packed)
+    ]
+    assert asyncio.run(_mdns_core.async_name_answered(zc, "taken.local.", 1.0))
+
+
 def test_async_os_hostname_no_addresses():
     zc = FakeZeroconf(start_loop=False)
     assert asyncio.run(_mdns_core.async_os_hostname(zc, 0.1, [])) is None
@@ -449,7 +459,7 @@ def test_advertiser_owns_and_closes_its_zeroconf(os_name, monkeypatch):
         created.append(FakeZeroconf())
         return created[-1]
 
-    monkeypatch.setattr(mdns, "_new_zeroconf", factory)
+    monkeypatch.setattr(mdns, "new_zeroconf", factory)
     adv = mdns.Advertiser(IDENT)
     adv.start()
     adv.start()  # idempotent
@@ -465,9 +475,7 @@ def test_advertiser_closes_owned_zeroconf_when_start_fails(monkeypatch):
     monkeypatch.setattr(_mdns_core, "async_os_hostname", none)
     monkeypatch.setattr(_mdns_core, "os_responder_present", lambda: True)
     created = []
-    monkeypatch.setattr(
-        mdns, "_new_zeroconf", lambda: created.append(FakeZeroconf()) or created[-1]
-    )
+    monkeypatch.setattr(mdns, "new_zeroconf", lambda: created.append(FakeZeroconf()) or created[-1])
     with pytest.raises(RuntimeError, match="did not answer"):
         mdns.Advertiser(IDENT).start()
     assert created[0].closed

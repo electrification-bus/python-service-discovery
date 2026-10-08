@@ -53,8 +53,8 @@ import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from zeroconf import (
-    AddressResolver,
     BadTypeInNameException,
+    DNSAddress,
     DNSOutgoing,
     DNSPointer,
     DNSQuestion,
@@ -86,7 +86,9 @@ from ebus_service_discovery.record import Address
 logger = logging.getLogger("ebus_service_discovery.mdns")
 
 _DOMAIN = "local."
+_TYPE_A = 1
 _TYPE_PTR = 12
+_TYPE_AAAA = 28
 _CLASS_IN = 1
 _FLAGS_QR_QUERY = 0x0000
 
@@ -274,6 +276,41 @@ def local_addresses() -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     return sorted(found.values(), key=lambda a: (a.version, a.is_link_local))
 
 
+async def _async_ask(
+    zc: Zeroconf,
+    questions: Sequence[tuple[str, int]],
+    match: Callable[[object], object],
+    timeout: float,
+):
+    """Send one mDNS query and poll the cache for the first record ``match`` accepts.
+
+    The query goes out at once and again at a third and two thirds of
+    ``timeout``: a responder that is probing its own name does not answer,
+    and one query sent by a just-started instance can go unanswered.
+    """
+    out = DNSOutgoing(_FLAGS_QR_QUERY)
+    for name, rtype in questions:
+        out.add_question(DNSQuestion(name, rtype, _CLASS_IN))
+    await zc.async_wait_for_start()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    deadline = start + timeout
+    resend = [start + timeout * f for f in (0.0, 1 / 3, 2 / 3)]
+    while True:
+        now = loop.time()
+        while resend and now >= resend[0]:
+            resend.pop(0)
+            zc.async_send(out)
+        for name, _ in questions:
+            for rec in zc.cache.async_entries_with_name(name):
+                found = match(rec)
+                if found:
+                    return found
+        if now >= deadline:
+            return None
+        await asyncio.sleep(0.05)
+
+
 async def async_os_hostname(
     zc: Zeroconf,
     timeout: float = 3.0,
@@ -281,36 +318,33 @@ async def async_os_hostname(
 ) -> str | None:
     """The ``.local`` name the OS responder answers for this host, or None.
 
-    Sends one mDNS query for the reverse ``PTR`` of up to eight of this host's
-    addresses and returns the first ``.local.`` name answered (with its
-    trailing dot). None means no OS responder answered within ``timeout``.
+    Asks for the reverse ``PTR`` of up to eight of this host's addresses and
+    returns the first ``.local.`` name answered (with its trailing dot). None
+    means no OS responder answered within ``timeout``.
     """
     addrs = list(addresses if addresses is not None else local_addresses())[:8]
     if not addrs:
         return None
-    reverse = [f"{a.reverse_pointer}." for a in addrs]
-    out = DNSOutgoing(_FLAGS_QR_QUERY)
-    for name in reverse:
-        out.add_question(DNSQuestion(name, _TYPE_PTR, _CLASS_IN))
-    await zc.async_wait_for_start()
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    deadline = start + timeout
-    # Query at once and again at a third and two thirds of the timeout: one
-    # query sent by a just-started instance can go unanswered.
-    resend = [start + timeout * f for f in (0.0, 1 / 3, 2 / 3)]
-    while True:
-        now = loop.time()
-        while resend and now >= resend[0]:
-            resend.pop(0)
-            zc.async_send(out)
-        for name in reverse:
-            for rec in zc.cache.async_entries_with_name(name):
-                if isinstance(rec, DNSPointer) and rec.alias.lower().endswith(".local."):
-                    return rec.alias
-        if now >= deadline:
-            return None
-        await asyncio.sleep(0.05)
+
+    def match(rec):
+        if isinstance(rec, DNSPointer) and rec.alias.lower().endswith(".local."):
+            return rec.alias
+        return None
+
+    questions = [(f"{a.reverse_pointer}.", _TYPE_PTR) for a in addrs]
+    return await _async_ask(zc, questions, match, timeout)
+
+
+def default_ip_version() -> IPVersion:
+    """The ``IPVersion`` for a ``Zeroconf`` this library creates.
+
+    ``IPVersion.All`` uses one dual-stack socket. On macOS (measured) its IPv4
+    multicast join fails with ``EINVAL`` (python-zeroconf logs "does not
+    support multicast"), leaving an IPv6-only instance that IPv4 peers never
+    hear; an ``IPVersion.V4Only`` instance there works over IPv4 only. So
+    macOS gets ``V4Only`` and other platforms ``All``.
+    """
+    return IPVersion.V4Only if sys.platform == "darwin" else IPVersion.All
 
 
 #: Sockets of avahi-daemon; one exists while the daemon runs.
@@ -330,9 +364,10 @@ def os_responder_present() -> bool:
 
 
 async def async_name_answered(zc: Zeroconf, server: str, timeout: float) -> bool:
-    """True when some responder answers an address query for ``server``."""
-    resolver = AddressResolver(server)
-    return bool(await resolver.async_request(zc, int(timeout * 1000)))
+    """True when some responder answers an A or AAAA query for ``server``."""
+    questions = [(server, _TYPE_A), (server, _TYPE_AAAA)]
+    found = await _async_ask(zc, questions, lambda rec: isinstance(rec, DNSAddress), timeout)
+    return bool(found)
 
 
 def fallback_hostname() -> str:
