@@ -139,36 +139,46 @@ def info_to_instance(info: ServiceInfo, service_type: str) -> ServiceInstance:
     )
 
 
-async def async_browse(
-    zc: Zeroconf, service_type: str, timeout: float, resolve_timeout: float | None = None
-) -> list[ServiceInstance]:
-    """Browse one service type for ``timeout`` seconds, then resolve each instance.
+async def async_browse(zc: Zeroconf, service_type: str, timeout: float) -> list[ServiceInstance]:
+    """Browse one service type for ``timeout`` seconds, resolving each instance as it is seen.
 
-    Instances that do not resolve (SRV, TXT and an address) within
-    ``resolve_timeout`` (default: ``timeout``, at least 1 s) are left out.
+    Returns within ``timeout``. An instance that is not resolved (SRV, TXT and
+    an address) by then, or that was removed, is left out. A responder usually
+    sends the SRV, TXT and address records with its answer, so most instances
+    resolve from the cache at once.
     """
     full = fq_type(service_type)
-    names: dict[str, None] = {}
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    pending: dict[str, tuple[AsyncServiceInfo, asyncio.Future]] = {}
 
     def on_change(
         zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange
     ) -> None:
         if state_change is ServiceStateChange.Removed:
-            names.pop(name, None)
-        else:
-            names[name] = None
+            entry = pending.pop(name, None)
+            if entry is not None:
+                entry[1].cancel()
+        elif name not in pending:
+            info = AsyncServiceInfo(full, name)
+            wait_ms = max(int(1000 * (deadline - loop.time())), 0)
+            pending[name] = (info, asyncio.ensure_future(info.async_request(zc, wait_ms)))
 
     browser = AsyncServiceBrowser(zc, full, handlers=[on_change])
     try:
         await asyncio.sleep(timeout)
+    except BaseException:
+        for _, task in pending.values():
+            task.cancel()
+        raise
     finally:
         await browser.async_cancel()
-    wait_ms = int(1000 * max(resolve_timeout if resolve_timeout is not None else timeout, 1.0))
-    infos = [AsyncServiceInfo(full, name) for name in names]
-    results = await asyncio.gather(*(info.async_request(zc, wait_ms) for info in infos))
+    # Each request ends by the shared deadline, so this wait is short.
+    entries = list(pending.values())
+    results = await asyncio.gather(*(task for _, task in entries), return_exceptions=True)
     out = []
-    for info, ok in zip(infos, results, strict=True):
-        if ok:
+    for (info, _), ok in zip(entries, results, strict=True):
+        if ok is True:
             out.append(info_to_instance(info, full))
         else:
             logger.debug("reason=resolveTimeout,name=%s", info.name)

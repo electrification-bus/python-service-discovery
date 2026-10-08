@@ -122,8 +122,9 @@ def browse(
 ) -> list[ServiceInstance]:
     """The instances of ``service_type`` (``_ebus._tcp``) seen within ``timeout`` seconds.
 
-    Each instance is resolved (SRV, TXT, addresses) before it is returned;
-    one that does not resolve is left out.
+    Each instance is resolved (SRV, TXT, addresses) as it is seen; one not
+    resolved within ``timeout`` is left out, so the call returns after about
+    ``timeout`` seconds.
     """
     with _zeroconf(zc) as z:
         return _run(z, core.async_browse(z, service_type, timeout))

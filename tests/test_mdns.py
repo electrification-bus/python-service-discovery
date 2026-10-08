@@ -148,6 +148,42 @@ def test_async_browse_resolves_and_drops_removed(monkeypatch):
     assert FakeBrowser.cancelled
 
 
+def test_async_browse_returns_within_timeout_despite_unresolved(monkeypatch):
+    full = "_mqtt._tcp.local."
+
+    class SlowInfo(_FakeInfo):
+        async def async_request(self, zc, timeout, *a, **kw):
+            await asyncio.sleep(timeout / 1000)  # never answered: waits its whole budget
+            return False
+
+    class FakeBrowser:
+        def __init__(self, zc, type_, handlers):
+            handlers[0](
+                zeroconf=zc,
+                service_type=type_,
+                name=f"slow.{full}",
+                state_change=ServiceStateChange.Added,
+            )
+
+        async def async_cancel(self):
+            pass
+
+    monkeypatch.setattr(_mdns_core, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(
+        _mdns_core, "AsyncServiceInfo", lambda f, n: SlowInfo(f, n, server="host-1.local.")
+    )
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        out = await _mdns_core.async_browse(object(), "_mqtt._tcp", 0.3)
+        return out, loop.time() - start
+
+    out, elapsed = asyncio.run(run())
+    assert out == []
+    assert elapsed < 0.45
+
+
 # --- BrokerSearch (mode and retry decisions) -------------------------------------
 
 
