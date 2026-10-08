@@ -22,7 +22,6 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
 
 from ebus_service_discovery import _mdns_core as core
 from ebus_service_discovery.ebus import (
-    TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
     HttpService,
@@ -62,7 +61,7 @@ async def find_broker(
     *,
     base_cfg: Mapping | None = None,
     stop: asyncio.Event | None = None,
-    accept: Sequence[str] = TCP_BROKER_TYPES,
+    accept: Sequence[str] | None = None,
     schedule: RetrySchedule | None = None,
     browse_timeout: float = DEFAULT_BROWSE_TIMEOUT,
 ) -> BrokerEndpoint | None:
@@ -72,7 +71,9 @@ async def find_broker(
     """
     _require(aiozc)
     schedule = schedule or RetrySchedule()
-    search = core.BrokerSearch(mode, url, base_cfg, accept, schedule.fast_attempts)
+    search = core.BrokerSearch(
+        mode, url, base_cfg, accept, schedule.fast_attempts, schedule.max_attempts
+    )
     if not search.needs_browse:
         return search.configured
     for attempt, delay in enumerate(schedule.delays()):

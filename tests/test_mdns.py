@@ -233,6 +233,37 @@ def test_search_fallback_after_fast_attempts():
     assert done and ep.host == "conf.local"
 
 
+def test_search_fallback_when_max_attempts_is_below_fast_attempts():
+    s = _mdns_core.BrokerSearch(
+        "discovery-with-fallback", "mqtt://192.0.2.1", None, fast_attempts=3, max_attempts=2
+    )
+    assert s.decide([], 0) == (False, None)
+    done, ep = s.decide([], 1)
+    assert done and ep.host == "192.0.2.1"
+
+
+@pytest.mark.parametrize(
+    "url,base_cfg",
+    [
+        ("mqtts://conf.local", None),
+        (None, {"host": "conf.local", "use_tls": True}),
+        (None, {"use_tls": True}),  # discovery-only: no host, TLS still configured
+    ],
+)
+def test_search_with_tls_configured_accepts_only_secure(url, base_cfg):
+    s = _mdns_core.BrokerSearch("discovery-with-fallback", url, base_cfg)
+    assert s.accept == ("_secure-mqtt._tcp",)
+    plain = _broker("_mqtt._tcp", server="broker-2.local", port=1883)
+    assert s.decide([plain], 0) == (False, None)
+
+
+def test_search_without_tls_accepts_plain_and_explicit_accept_wins():
+    s = _mdns_core.BrokerSearch("discovery-only", "mqtt://conf.local", {"host": "x"})
+    assert s.accept == ("_secure-mqtt._tcp", "_mqtt._tcp")
+    s = _mdns_core.BrokerSearch(None, "mqtts://conf.local", None, accept=["_mqtt._tcp"])
+    assert s.accept == ("_mqtt._tcp",)
+
+
 def test_search_fallback_without_configured_keeps_browsing():
     s = _mdns_core.BrokerSearch("discovery-with-fallback", None, None)
     assert s.decide([], 10) == (False, None)
@@ -287,6 +318,29 @@ def test_find_broker_fallback(monkeypatch):
         schedule=FAST,
     )
     assert (ep.host, ep.port) == ("cfg.local", 1884)
+
+
+def test_find_broker_fallback_with_short_schedule(monkeypatch):
+    calls = _patch_browse(monkeypatch, mdns, [])
+    short = RetrySchedule(fast_interval=0, slow_interval=0, max_attempts=2)
+    ep = mdns.find_broker(
+        "discovery-with-fallback", "mqtt://192.0.2.1", zc=object(), schedule=short
+    )
+    assert ep is not None and ep.host == "192.0.2.1"
+    assert len(calls) == 2
+
+
+def test_find_broker_tls_config_skips_plain_broker(monkeypatch):
+    plain = _broker("_mqtt._tcp", server="broker-2.local", port=1883)
+    _patch_browse(monkeypatch, mdns, [[plain], [plain], [plain]])
+    base = {
+        "host": "broker-1.local",
+        "use_tls": True,
+        "authentication": {"type": "USER_PASS", "username": "u", "password": "p"},
+    }
+    ep = mdns.find_broker("discovery-with-fallback", base_cfg=base, zc=object(), schedule=FAST)
+    assert (ep.host, ep.use_tls) == ("broker-1.local", True)  # the configured fallback
+    assert ep.mqtt_cfg(base)["use_tls"] is True
 
 
 def test_find_broker_stop(monkeypatch):

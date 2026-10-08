@@ -85,15 +85,15 @@ endpoint = mdns.find_broker("discovery-with-fallback", base_cfg=base_cfg)
 client = MqttClient.from_config(endpoint.mqtt_cfg(base_cfg), client_id="example-client")
 ```
 
-`endpoint.mqtt_cfg(base_cfg)` returns a copy of `base_cfg` with only `host`, `port` and `use_tls` replaced, so the credentials and CA certificate are kept. The configured broker is the `url` argument (`mqtt://` or `mqtts://`) or, without one, the host of `base_cfg`.
+`endpoint.mqtt_cfg(base_cfg)` returns a copy of `base_cfg` with only `host`, `port` and `use_tls` replaced, so the credentials and CA certificate are kept; it logs a warning if that turns `use_tls` off. The configured broker is the `url` argument (`mqtt://` or `mqtts://`) or, without one, the host of `base_cfg`.
 
 | Mode | Behavior |
 |---|---|
 | `configured-only` | Returns the configured broker. Never browses. |
 | `discovery-only` (the default when the mode is `None`) | Browses until a broker is found, or until `stop` is set or the schedule's `max_attempts` runs out (then `None`). |
-| `discovery-with-fallback` | Browses; if the first three attempts find nothing, returns the configured broker. |
+| `discovery-with-fallback` | Browses; if the first three attempts (or all of them, when `max_attempts` is fewer) find nothing, returns the configured broker. |
 
-Each attempt browses `_secure-mqtt._tcp`, `_mqtt-wss._tcp`, `_mqtt-ws._tcp` and `_mqtt._tcp` for `browse_timeout` seconds (default 3). A broker advertised under several types counts once, at its most preferred type, in the specification's order. The WebSocket types are logged but not selected, since ebus-mqtt-client connects over TCP; pass `accept=` to change that. Attempts follow `RetrySchedule`: three attempts 3 s apart, then one every 30 s. The broker host is the TXT `broker` value when advertised, otherwise the SRV target. There is no reachability probe: connecting is the probe.
+Each attempt browses `_secure-mqtt._tcp`, `_mqtt-wss._tcp`, `_mqtt-ws._tcp` and `_mqtt._tcp` for `browse_timeout` seconds (default 3). A broker advertised under several types counts once, at its most preferred type, in the specification's order. The WebSocket types are logged but not selected, since ebus-mqtt-client connects over TCP. When TLS is configured (an `mqtts://` URL or `use_tls` in `base_cfg`), only `_secure-mqtt._tcp` is selected, so the credentials are never sent in cleartext to a plain broker that answered the multicast query. Pass `accept=` to change either. Attempts follow `RetrySchedule`: three attempts 3 s apart, then one every 30 s. The broker host is the TXT `broker` value when advertised, otherwise the SRV target. There is no reachability probe: connecting is the probe.
 
 When several distinct brokers are found, the specification leaves the choice to the implementation. `select_broker()` prefers, in `discovery-with-fallback`, a discovered broker whose host matches the configured one; otherwise the most preferred transport, then the lowest host name. It logs that it chose among several. Configure the intended broker's URL in a multi-broker deployment.
 

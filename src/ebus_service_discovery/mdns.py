@@ -31,7 +31,6 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
 
 from ebus_service_discovery import _mdns_core as core
 from ebus_service_discovery.ebus import (
-    TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
     HttpService,
@@ -147,7 +146,7 @@ def find_broker(
     base_cfg: Mapping | None = None,
     stop: threading.Event | None = None,
     zc: Zeroconf | None = None,
-    accept: Sequence[str] = TCP_BROKER_TYPES,
+    accept: Sequence[str] | None = None,
     schedule: RetrySchedule | None = None,
     browse_timeout: float = DEFAULT_BROWSE_TIMEOUT,
 ) -> BrokerEndpoint | None:
@@ -159,12 +158,16 @@ def find_broker(
     - ``configured-only``: returns the configured broker; never browses.
     - ``discovery-only`` (the default): browses until a broker is found.
     - ``discovery-with-fallback``: browses; if the first ``fast_attempts`` of
-      ``schedule`` find nothing, returns the configured broker.
+      ``schedule`` (or all ``max_attempts``, if fewer) find nothing, returns
+      the configured broker.
 
     Each attempt browses all four broker types for ``browse_timeout`` seconds.
-    Brokers whose type is in ``accept`` (default ``_secure-mqtt._tcp`` and
-    ``_mqtt._tcp``) are ranked by ``ebus.rank_brokers`` and chosen by
-    ``ebus.select_broker``; others are logged. Attempts follow ``schedule``
+    Brokers whose type is in ``accept`` are ranked by ``ebus.rank_brokers``
+    and chosen by ``ebus.select_broker``; others are logged. ``accept``
+    defaults to ``_secure-mqtt._tcp`` and ``_mqtt._tcp``, or to
+    ``_secure-mqtt._tcp`` alone when TLS is configured (an ``mqtts://`` url or
+    ``base_cfg["use_tls"]``), so a TLS config's credentials never go to a
+    plain broker. Attempts follow ``schedule``
     (default: 3 attempts 3 s apart, then every 30 s). Returns None when
     ``stop`` is set or ``schedule.max_attempts`` runs out. There is no
     reachability probe: connecting is the probe.
@@ -173,7 +176,9 @@ def find_broker(
     and credentials of ``base_cfg``.
     """
     schedule = schedule or RetrySchedule()
-    search = core.BrokerSearch(mode, url, base_cfg, accept, schedule.fast_attempts)
+    search = core.BrokerSearch(
+        mode, url, base_cfg, accept, schedule.fast_attempts, schedule.max_attempts
+    )
     if not search.needs_browse:
         return search.configured
     with _zeroconf(zc) as z:

@@ -71,6 +71,7 @@ from ebus_service_discovery.ebus import (
     BROKER_PREFERENCE,
     DEVICE_INFO_SERVICE,
     EBUS_SERVICE,
+    SECURE_MQTT_SERVICE,
     TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
@@ -211,6 +212,14 @@ class BrokerSearch:
     ``mdns.find_broker`` and ``mdns_async.find_broker`` drive one of these:
     for each attempt they browse ``browse_types`` and pass the results to
     ``decide``, which returns ``(done, endpoint)``.
+
+    ``accept`` defaults to ``TCP_BROKER_TYPES``, or to ``_secure-mqtt._tcp``
+    alone when TLS is configured (an ``mqtts://`` url or ``base_cfg``
+    ``use_tls``), so the credentials of a TLS config are never sent to a
+    plain broker that answered the multicast query. In
+    ``discovery-with-fallback`` the configured broker is returned after
+    ``fast_attempts`` empty attempts, or after ``max_attempts`` if that is
+    fewer.
     """
 
     def __init__(
@@ -218,13 +227,22 @@ class BrokerSearch:
         mode: BrokerMode | str | None,
         url: str | None,
         base_cfg: Mapping | None,
-        accept: Sequence[str] = TCP_BROKER_TYPES,
+        accept: Sequence[str] | None = None,
         fast_attempts: int = 3,
+        max_attempts: int | None = None,
     ):
         self.mode = BrokerMode.parse(mode)
         self.configured = configured_endpoint(url, base_cfg)
+        self.requires_tls = bool(
+            (self.configured is not None and self.configured.use_tls)
+            or (base_cfg and base_cfg.get("use_tls"))
+        )
+        if accept is None:
+            accept = (SECURE_MQTT_SERVICE,) if self.requires_tls else TCP_BROKER_TYPES
         self.accept = tuple(accept)
-        self.fast_attempts = fast_attempts
+        self.fallback_after = (
+            fast_attempts if max_attempts is None else min(fast_attempts, max_attempts)
+        )
         if self.mode is BrokerMode.CONFIGURED_ONLY and self.configured is None:
             raise ValueError("configured-only needs a broker url or a base_cfg with a host")
         # Browse every broker type so an unusable (WebSocket) broker is reported.
@@ -255,7 +273,7 @@ class BrokerSearch:
         if (
             self.mode is BrokerMode.DISCOVERY_WITH_FALLBACK
             and self.configured is not None
-            and attempt + 1 >= self.fast_attempts
+            and attempt + 1 >= self.fallback_after
         ):
             logger.info("reason=brokerFallbackToConfigured,url=%s", self.configured.url)
             return True, self.configured

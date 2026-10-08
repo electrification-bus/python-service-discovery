@@ -42,7 +42,8 @@ BROKER_PREFERENCE: tuple[str, ...] = (
     MQTT_SERVICE,
 )
 
-#: The broker types an MQTT-over-TCP client can use; the default accept set.
+#: The broker types an MQTT-over-TCP client can use; the default accept set
+#: when no TLS is configured (with TLS, ``_secure-mqtt._tcp`` alone).
 #: ebus-mqtt-client has no WebSocket transport, so ``_mqtt-ws`` / ``_mqtt-wss``
 #: brokers are reported but not selected unless a caller accepts them.
 TCP_BROKER_TYPES: tuple[str, ...] = (SECURE_MQTT_SERVICE, MQTT_SERVICE)
@@ -495,9 +496,11 @@ class BrokerEndpoint:
 
         Only ``host``, ``port`` and ``use_tls`` are replaced; every other key
         (authentication, CA and client certificates) is kept, and ``base`` is
-        not modified.
+        not modified. Replacing ``use_tls`` True with False logs a warning.
         """
         cfg = copy.deepcopy(dict(base)) if base else {}
+        if cfg.get("use_tls") and not self.use_tls:
+            logger.warning("reason=tlsDisabledForPlainBroker,url=%s", self.url)
         cfg["host"] = self.host
         cfg["port"] = self.port
         cfg["use_tls"] = self.use_tls

@@ -348,6 +348,15 @@ def test_endpoint_mqtt_cfg_is_a_copy_with_three_keys_replaced():
     assert ep.mqtt_cfg() == {"host": "broker-1.local", "port": 8883, "use_tls": True}
 
 
+def test_endpoint_mqtt_cfg_warns_when_tls_is_turned_off(caplog):
+    plain = BrokerEndpoint(service_type="_mqtt._tcp", host="broker-2.local", port=1883)
+    with caplog.at_level(logging.WARNING):
+        plain.mqtt_cfg({"host": "broker-1.local"})
+        assert "tlsDisabled" not in caplog.text
+        assert plain.mqtt_cfg({"use_tls": True})["use_tls"] is False
+    assert "reason=tlsDisabledForPlainBroker,url=mqtt://broker-2.local:1883" in caplog.text
+
+
 @pytest.mark.parametrize(
     "url,stype,host,port",
     [
