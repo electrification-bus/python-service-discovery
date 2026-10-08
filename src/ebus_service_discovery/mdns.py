@@ -223,8 +223,12 @@ class Advertiser:
 
     Registers ``_ebus._tcp`` and ``_device-info._tcp`` from ``identity``, and
     ``_http._tcp`` / ``_https._tcp`` for each ``HttpService`` in ``http``.
-    All share one instance name, by default the host label; on a conflict it
-    becomes ``<name>-2`` through ``<name>-99``.
+    All share one instance name: ``instance_name``, else the first of
+    ``identity.device_ids`` (the host label if that is over 60 bytes). On a
+    conflict it becomes ``<name>-2`` through ``<name>-99``. The conflict probe
+    sees only names advertised with a PTR record for the service type, not the
+    bare TXT record macOS publishes at ``<host label>._device-info._tcp``, so do
+    not use the host label as ``instance_name`` on macOS.
 
     The SRV target is the name the OS responder already answers for this host,
     found over mDNS, and no address records are published, so the OS keeps

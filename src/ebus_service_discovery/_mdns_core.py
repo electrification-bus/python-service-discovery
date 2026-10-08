@@ -95,6 +95,9 @@ _FLAGS_QR_QUERY = 0x0000
 
 #: Instance-name suffixes tried on a conflict: ``-2`` through ``-99``.
 MAX_RENAME_SUFFIX = 99
+#: Longest device id used as the default instance name: one 63-octet DNS
+#: label less the ``-99`` suffix.
+MAX_DEFAULT_INSTANCE_OCTETS = 63 - len(f"-{MAX_RENAME_SUFFIX}")
 
 
 def fq_type(service_type: str) -> str:
@@ -586,9 +589,22 @@ class AdvertisementPlan:
         return server, addrs
 
     def base_instance_name(self, server: str) -> str:
+        """``instance_name``, else the first device id, else the host label.
+
+        A device id is used when it fits one DNS label with a ``-99`` rename
+        suffix (``MAX_DEFAULT_INSTANCE_OCTETS``). The host label is the last
+        resort: on a host whose OS responder holds records under it (macOS
+        publishes ``<host>._device-info._tcp``), the rename probe does not see
+        them, and two TXT record sets end up under one name.
+        """
         if self.instance_name:
             return self.instance_name
-        return strip_dot(server).rsplit(".local", 1)[0]
+        first = self.identity.device_ids[0]
+        if len(first.encode()) <= MAX_DEFAULT_INSTANCE_OCTETS:
+            return first
+        host = strip_dot(server).rsplit(".local", 1)[0]
+        logger.info("reason=deviceIdTooLongForInstanceName,deviceId=%s,instance=%s", first, host)
+        return host
 
     def builder(self, server: str, addresses: Sequence[str]) -> Callable[[str], list[ServiceInfo]]:
         def build(name: str) -> list[ServiceInfo]:

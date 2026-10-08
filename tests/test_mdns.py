@@ -568,7 +568,7 @@ def test_advertiser_registers_services_under_os_name(os_name):
     with adv:
         assert adv.running
         assert adv.server == "host-1.local."
-        assert adv.instance_name == "host-1"
+        assert adv.instance_name == "dev-1"  # the first device id
         infos = {i.type: i for i in adv.infos}
         assert set(infos) == {
             "_ebus._tcp.local.",
@@ -591,17 +591,68 @@ def test_advertiser_registers_services_under_os_name(os_name):
 
 
 def test_advertiser_renames_on_conflict(os_name, caplog):
-    zc = FakeZeroconf(taken={"host-1._device-info._tcp.local.", "host-1-2._ebus._tcp.local."})
+    zc = FakeZeroconf(taken={"dev-1._device-info._tcp.local.", "dev-1-2._ebus._tcp.local."})
     with caplog.at_level(logging.INFO), mdns.Advertiser(IDENT, zc=zc, port=1234) as adv:
-        assert adv.instance_name == "host-1-3"
+        assert adv.instance_name == "dev-1-3"
         assert sorted(zc.registered) == [
-            "host-1-3._device-info._tcp.local.",
-            "host-1-3._ebus._tcp.local.",
+            "dev-1-3._device-info._tcp.local.",
+            "dev-1-3._ebus._tcp.local.",
         ]
         # the non-conflicting registrations of the rejected names were withdrawn
-        assert "host-1._ebus._tcp.local." in zc.unregistered
-        assert "host-1-2._device-info._tcp.local." in zc.unregistered
-    assert "instanceRenamed,from=host-1,to=host-1-3" in caplog.text
+        assert "dev-1._ebus._tcp.local." in zc.unregistered
+        assert "dev-1-2._device-info._tcp.local." in zc.unregistered
+    assert "instanceRenamed,from=dev-1,to=dev-1-3" in caplog.text
+    zc.close()
+
+
+def test_advertiser_default_name_is_first_device_id(os_name):
+    ident = Identity(
+        device_ids=["meter-a", "meter-b"],
+        roles=["device"],
+        manufacturer="Example",
+        model="EX-1",
+        serial_number="sn-0001",
+    )
+    zc = FakeZeroconf()
+    with mdns.Advertiser(ident, zc=zc) as adv:
+        assert adv.instance_name == "meter-a"
+        assert {i.name for i in adv.infos} == {
+            "meter-a._ebus._tcp.local.",
+            "meter-a._device-info._tcp.local.",
+        }
+    zc.close()
+
+
+def test_advertiser_long_device_id_falls_back_to_host_label(os_name, caplog):
+    long_id = "d" * (_mdns_core.MAX_DEFAULT_INSTANCE_OCTETS + 1)
+    ident = Identity(
+        device_ids=[long_id],
+        roles=["device"],
+        manufacturer="Example",
+        model="EX-1",
+        serial_number="sn-0001",
+    )
+    fits = Identity(
+        device_ids=["d" * _mdns_core.MAX_DEFAULT_INSTANCE_OCTETS],
+        roles=["device"],
+        manufacturer="Example",
+        model="EX-1",
+        serial_number="sn-0001",
+    )
+    zc = FakeZeroconf()
+    with caplog.at_level(logging.INFO), mdns.Advertiser(ident, zc=zc) as adv:
+        assert adv.instance_name == "host-1"
+    assert "reason=deviceIdTooLongForInstanceName" in caplog.text
+    with mdns.Advertiser(fits, zc=zc) as adv:
+        assert adv.instance_name == "d" * _mdns_core.MAX_DEFAULT_INSTANCE_OCTETS
+    zc.close()
+
+
+def test_advertiser_explicit_instance_name_wins(os_name):
+    zc = FakeZeroconf()
+    with mdns.Advertiser(IDENT, zc=zc, instance_name="Kitchen Meter") as adv:
+        assert adv.instance_name == "Kitchen Meter"
+        assert adv.infos[0].name == "Kitchen Meter._ebus._tcp.local."
     zc.close()
 
 
@@ -688,8 +739,8 @@ def test_interrupted_sync_start_withdraws_what_it_registered(os_name):
         mdns._run(zc, _mdns_core.async_advertise(zc, plan, 1.0), timeout=0.3)
     assert zc.registered == {}
     assert sorted(zc.unregistered) == [
-        "host-1._device-info._tcp.local.",
-        "host-1._ebus._tcp.local.",
+        "dev-1._device-info._tcp.local.",
+        "dev-1._ebus._tcp.local.",
     ]
     zc.close()
 
@@ -709,7 +760,7 @@ def test_advertiser_without_os_responder_publishes_own_addresses(monkeypatch):
     zc = FakeZeroconf()
     with mdns.Advertiser(IDENT, zc=zc) as adv:
         assert adv.server == "plain-host.local."
-        assert adv.instance_name == "plain-host"
+        assert adv.instance_name == "dev-1"
         assert adv.infos[0].parsed_addresses() == ["192.0.2.40"]
     zc.close()
 

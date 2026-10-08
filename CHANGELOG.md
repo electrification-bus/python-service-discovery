@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `discovery-with-fallback` no longer connects to a different broker than the configured one (#4). `select_broker()` and `find_broker()` (sync and asyncio) accept only a discovered broker that matches the configured host by TXT `broker` name, SRV target or, for a host configured as an IP address, an advertised address; until one is heard within the fallback window they keep browsing, then return the configured broker. Previously the first ranked broker won whenever the configured one was not matched, and received the configured credentials. Behavior change: pass `allow_unmatched=True` to `select_broker()`, `find_broker()` or `BrokerSearch` for the 0.4.0 behavior. `discovery-only` and `configured-only` are unchanged. Every discovered broker not chosen is logged (`reason=brokerNotChosen`).
 
+- `Advertiser` (sync and asyncio) no longer names its services after the host label by default (#6). On macOS that name collided with the OS responder's own `<host label>._device-info._tcp` TXT record, which the rename probe does not detect, so resolvers saw two TXT record sets under one name. The default instance name is now the first of `Identity.device_ids`, or the host label when that id is over 60 bytes. Behavior change: pass `instance_name=` to keep a host-label name. The README documents the macOS caveat.
+
 ### Added
 
 - `ebus.match_configured(configured, ranked)`: the discovered broker that is the configured one, or None. A match by address keeps the configured address as `host`.

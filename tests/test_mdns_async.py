@@ -76,11 +76,11 @@ def test_cancelled_start_during_announcements_withdraws_services():
 
 @pytest.mark.usefixtures("os_name")
 def test_cancelled_start_during_probing_withdraws_services():
-    aiozc = FakeAsyncZeroconf(probing={"host-1._device-info._tcp.local."})
+    aiozc = FakeAsyncZeroconf(probing={"dev-1._device-info._tcp.local."})
     adv = asyncio.run(_cancel_start_once(aiozc, 1))
     assert not adv.running
     assert aiozc.zeroconf.registered == {}
-    assert aiozc.zeroconf.unregistered == ["host-1._ebus._tcp.local."]
+    assert aiozc.zeroconf.unregistered == ["dev-1._ebus._tcp.local."]
 
 
 def test_async_find_broker(monkeypatch):
