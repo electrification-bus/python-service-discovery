@@ -64,6 +64,7 @@ async def find_broker(
     accept: Sequence[str] | None = None,
     schedule: RetrySchedule | None = None,
     browse_timeout: float = DEFAULT_BROWSE_TIMEOUT,
+    allow_unmatched: bool = False,
 ) -> BrokerEndpoint | None:
     """Resolve the broker to connect to; see ``mdns.find_broker``.
 
@@ -72,7 +73,13 @@ async def find_broker(
     _require(aiozc)
     schedule = schedule or RetrySchedule()
     search = core.BrokerSearch(
-        mode, url, base_cfg, accept, schedule.fast_attempts, schedule.max_attempts
+        mode,
+        url,
+        base_cfg,
+        accept,
+        schedule.fast_attempts,
+        schedule.max_attempts,
+        allow_unmatched,
     )
     if not search.needs_browse:
         return search.configured

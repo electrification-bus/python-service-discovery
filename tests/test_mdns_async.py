@@ -100,6 +100,19 @@ def test_async_find_broker_configured_only(monkeypatch):
     assert ep.host == "c.local" and calls == []
 
 
+def test_async_find_broker_fallback_does_not_take_other_broker(monkeypatch):
+    other = _broker("_secure-mqtt._tcp", server="broker-2.local")
+    _patch_browse(monkeypatch, mdns_async, [[other], [other], [other]])
+    mode, url = "discovery-with-fallback", "mqtts://broker-1.local"
+    ep = asyncio.run(mdns_async.find_broker(FakeAsyncZeroconf(), mode, url, schedule=FAST))
+    assert ep.host == "broker-1.local"
+    _patch_browse(monkeypatch, mdns_async, [[other]])
+    ep = asyncio.run(
+        mdns_async.find_broker(FakeAsyncZeroconf(), mode, url, schedule=FAST, allow_unmatched=True)
+    )
+    assert ep.host == "broker-2.local"
+
+
 def test_async_find_broker_stop(monkeypatch):
     _patch_browse(monkeypatch, mdns_async, [])
 

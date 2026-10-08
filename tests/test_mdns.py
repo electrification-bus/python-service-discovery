@@ -264,6 +264,52 @@ def test_search_without_tls_accepts_plain_and_explicit_accept_wins():
     assert s.accept == ("_mqtt._tcp",)
 
 
+def test_search_fallback_waits_for_configured_then_falls_back(caplog):
+    s = _mdns_core.BrokerSearch("discovery-with-fallback", "mqtts://conf.local", None)
+    other = _broker("_secure-mqtt._tcp", server="other.local")
+    with caplog.at_level(logging.INFO):
+        assert s.decide([other], 0) == (False, None)
+        assert s.decide([other], 1) == (False, None)
+        done, ep = s.decide([other], 2)
+    assert done and ep is s.configured
+    assert "brokerNotChosen,url=mqtts://other.local:8883" in caplog.text
+    assert "brokerDiscovered" not in caplog.text
+
+
+def test_search_fallback_takes_configured_when_it_appears():
+    s = _mdns_core.BrokerSearch("discovery-with-fallback", "mqtts://192.0.2.10", None)
+    other = ServiceInstance(
+        service_type="_secure-mqtt._tcp",
+        instance_name="other",
+        server="other.local",
+        port=8883,
+        addresses=(Address.parse("192.0.2.11"),),
+    )
+    assert s.decide([other], 0) == (False, None)
+    conf = _broker("_secure-mqtt._tcp", server="conf.local", port=18883)  # at 192.0.2.10
+    done, ep = s.decide([other, conf], 1)
+    assert done and (ep.host, ep.port, ep.server) == ("192.0.2.10", 18883, "conf.local")
+
+
+def test_search_fallback_allow_unmatched_takes_other():
+    s = _mdns_core.BrokerSearch(
+        "discovery-with-fallback", "mqtts://conf.local", None, allow_unmatched=True
+    )
+    done, ep = s.decide([_broker("_secure-mqtt._tcp", server="other.local")], 0)
+    assert done and ep.host == "other.local"
+
+
+def test_search_discovery_only_ignores_configured_host():
+    s = _mdns_core.BrokerSearch("discovery-only", "mqtts://conf.local", None)
+    done, ep = s.decide([_broker("_secure-mqtt._tcp", server="other.local")], 0)
+    assert done and ep.host == "other.local"
+
+
+def test_search_configured_only_never_decides_on_discovery():
+    s = _mdns_core.BrokerSearch("configured-only", "mqtts://conf.local", None)
+    assert not s.needs_browse and s.configured.host == "conf.local"
+
+
 def test_search_fallback_without_configured_keeps_browsing():
     s = _mdns_core.BrokerSearch("discovery-with-fallback", None, None)
     assert s.decide([], 10) == (False, None)
@@ -341,6 +387,28 @@ def test_find_broker_tls_config_skips_plain_broker(monkeypatch):
     ep = mdns.find_broker("discovery-with-fallback", base_cfg=base, zc=object(), schedule=FAST)
     assert (ep.host, ep.use_tls) == ("broker-1.local", True)  # the configured fallback
     assert ep.mqtt_cfg(base)["use_tls"] is True
+
+
+def test_find_broker_fallback_does_not_take_other_broker(monkeypatch):
+    other = _broker("_secure-mqtt._tcp", server="broker-2.local")
+    calls = _patch_browse(monkeypatch, mdns, [[other], [other], [other]])
+    base = {"host": "broker-1.local", "use_tls": True}
+    ep = mdns.find_broker("discovery-with-fallback", base_cfg=base, zc=object(), schedule=FAST)
+    assert ep.host == "broker-1.local" and len(calls) == 3
+
+
+def test_find_broker_fallback_allow_unmatched(monkeypatch):
+    other = _broker("_secure-mqtt._tcp", server="broker-2.local")
+    _patch_browse(monkeypatch, mdns, [[other]])
+    base = {"host": "broker-1.local", "use_tls": True}
+    ep = mdns.find_broker(
+        "discovery-with-fallback",
+        base_cfg=base,
+        zc=object(),
+        schedule=FAST,
+        allow_unmatched=True,
+    )
+    assert ep.host == "broker-2.local"
 
 
 def test_find_broker_stop(monkeypatch):

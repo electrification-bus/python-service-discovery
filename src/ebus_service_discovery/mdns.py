@@ -149,6 +149,7 @@ def find_broker(
     accept: Sequence[str] | None = None,
     schedule: RetrySchedule | None = None,
     browse_timeout: float = DEFAULT_BROWSE_TIMEOUT,
+    allow_unmatched: bool = False,
 ) -> BrokerEndpoint | None:
     """Resolve the broker to connect to (framework.md requirement 22).
 
@@ -157,9 +158,12 @@ def find_broker(
 
     - ``configured-only``: returns the configured broker; never browses.
     - ``discovery-only`` (the default): browses until a broker is found.
-    - ``discovery-with-fallback``: browses; if the first ``fast_attempts`` of
-      ``schedule`` (or all ``max_attempts``, if fewer) find nothing, returns
-      the configured broker.
+    - ``discovery-with-fallback``: browses for the configured broker; if the
+      first ``fast_attempts`` of ``schedule`` (or all ``max_attempts``, if
+      fewer) do not find it, returns the configured broker. A different
+      discovered broker is never returned in its place unless
+      ``allow_unmatched`` is True. With no configured broker, this is
+      ``discovery-only``.
 
     Each attempt browses all four broker types for ``browse_timeout`` seconds.
     Brokers whose type is in ``accept`` are ranked by ``ebus.rank_brokers``
@@ -177,7 +181,13 @@ def find_broker(
     """
     schedule = schedule or RetrySchedule()
     search = core.BrokerSearch(
-        mode, url, base_cfg, accept, schedule.fast_attempts, schedule.max_attempts
+        mode,
+        url,
+        base_cfg,
+        accept,
+        schedule.fast_attempts,
+        schedule.max_attempts,
+        allow_unmatched,
     )
     if not search.needs_browse:
         return search.configured

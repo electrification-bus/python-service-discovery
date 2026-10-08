@@ -118,8 +118,8 @@ def test_find_fake_secure_mqtt_broker():
         zc.register_service(info)
         try:
             # Other brokers may be on the network: the configured URL names
-            # this one, and discovery-with-fallback prefers a discovered broker
-            # whose host matches it.
+            # this one, and discovery-with-fallback accepts only a discovered
+            # broker whose host matches it.
             base = {"host": "unused.example", "tls_ca_cert": "/path/ca.pem"}
             ep = mdns.find_broker(
                 "discovery-with-fallback",

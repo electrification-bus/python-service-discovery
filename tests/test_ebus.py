@@ -23,6 +23,7 @@ from ebus_service_discovery.ebus import (
     TxtSizeWarning,
     check_txt,
     decode_txt,
+    match_configured,
     parse_ebus_txt,
     rank_brokers,
     select_broker,
@@ -454,11 +455,68 @@ def test_select_discovery_only():
     assert select_broker(None, conf, [b]) is b
 
 
-def test_select_discovery_with_fallback():
+def test_select_discovery_with_fallback_never_replaces_configured(caplog):
     conf = BrokerEndpoint.from_url("mqtts://conf.local")
     b = _ep(SECURE_MQTT_SERVICE, "b.local")
-    assert select_broker("discovery-with-fallback", conf, [b]) is b
+    with caplog.at_level(logging.INFO, logger="ebus_service_discovery.ebus"):
+        assert select_broker("discovery-with-fallback", conf, [b]) is conf
+    assert "brokerNotChosen,url=mqtts://b.local:1,chosen=mqtts://conf.local:8883" in caplog.text
     assert select_broker("discovery-with-fallback", conf, []) is conf
+
+
+def test_select_discovery_with_fallback_takes_discovered_port_of_configured():
+    conf = BrokerEndpoint.from_url("mqtt://conf.local")
+    other = _ep(SECURE_MQTT_SERVICE, "a.local")
+    match = _ep(SECURE_MQTT_SERVICE, "conf.example.net", server="Conf.local.", port=18883)
+    assert select_broker("discovery-with-fallback", conf, [other, match]) is match
+
+
+def test_select_discovery_with_fallback_allow_unmatched():
+    conf = BrokerEndpoint.from_url("mqtts://conf.local")
+    b1 = _ep(SECURE_MQTT_SERVICE, "b1.local")
+    b2 = _ep(SECURE_MQTT_SERVICE, "conf.local")
+    mode = "discovery-with-fallback"
+    assert select_broker(mode, conf, [b1], allow_unmatched=True) is b1
+    assert select_broker(mode, conf, [b1, b2], allow_unmatched=True) is b2
+    assert select_broker(mode, conf, [], allow_unmatched=True) is conf
+
+
+def test_select_discovery_with_fallback_without_configured_takes_first():
+    b1 = _ep(SECURE_MQTT_SERVICE, "b1.local")
+    b2 = _ep(SECURE_MQTT_SERVICE, "b2.local")
+    assert select_broker("discovery-with-fallback", None, [b1, b2]) is b1
+    assert select_broker("discovery-with-fallback", None, []) is None
+
+
+@pytest.mark.parametrize(
+    "url,advertised",
+    [
+        ("mqtt://192.0.2.20", "192.0.2.20"),
+        ("mqtt://[2001:db8::20]", "2001:db8::20"),
+        ("mqtt://[fe80::20%25eth0]", "fe80::20%eth0"),
+    ],
+)
+def test_match_configured_by_address_keeps_configured_host(url, advertised):
+    conf = BrokerEndpoint.from_url(url)
+    other = BrokerEndpoint(
+        SECURE_MQTT_SERVICE, "a.local", 8883, addresses=(Address.parse("192.0.2.10"),)
+    )
+    b = BrokerEndpoint(
+        SECURE_MQTT_SERVICE,
+        "b.local",
+        18883,
+        addresses=(Address.parse("192.0.2.99"), Address.parse(advertised)),
+    )
+    chosen = select_broker("discovery-with-fallback", conf, [other, b])
+    assert (chosen.host, chosen.port, chosen.use_tls) == (conf.host, 18883, True)
+    assert chosen.addresses == b.addresses
+    assert match_configured(conf, [other]) is None
+
+
+def test_match_configured_by_name_ignores_addresses():
+    conf = BrokerEndpoint.from_url("mqtt://b.local")
+    other = BrokerEndpoint(MQTT_SERVICE, "a.local", 1883, addresses=(Address.parse("192.0.2.1"),))
+    assert match_configured(conf, [other]) is None
 
 
 def test_select_among_several_prefers_configured_host_and_logs(caplog):

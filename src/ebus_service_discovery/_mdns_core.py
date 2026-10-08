@@ -217,9 +217,11 @@ class BrokerSearch:
     alone when TLS is configured (an ``mqtts://`` url or ``base_cfg``
     ``use_tls``), so the credentials of a TLS config are never sent to a
     plain broker that answered the multicast query. In
-    ``discovery-with-fallback`` the configured broker is returned after
-    ``fast_attempts`` empty attempts, or after ``max_attempts`` if that is
-    fewer.
+    ``discovery-with-fallback`` with a configured broker, only a discovered
+    broker that matches it (``ebus.match_configured``) is chosen, unless
+    ``allow_unmatched``; the configured broker is returned after
+    ``fast_attempts`` attempts without a match, or after ``max_attempts`` if
+    that is fewer.
     """
 
     def __init__(
@@ -230,8 +232,10 @@ class BrokerSearch:
         accept: Sequence[str] | None = None,
         fast_attempts: int = 3,
         max_attempts: int | None = None,
+        allow_unmatched: bool = False,
     ):
         self.mode = BrokerMode.parse(mode)
+        self.allow_unmatched = allow_unmatched
         self.configured = configured_endpoint(url, base_cfg)
         self.requires_tls = bool(
             (self.configured is not None and self.configured.use_tls)
@@ -266,10 +270,14 @@ class BrokerSearch:
                     "|".join(self.accept),
                 )
         if usable:
-            chosen = select_broker(self.mode, self.configured, usable)
-            logger.info("reason=brokerDiscovered,url=%s,attempt=%d", chosen.url, attempt + 1)
-            return True, chosen
-        logger.info("reason=brokerNotFound,attempt=%d", attempt + 1)
+            chosen = select_broker(
+                self.mode, self.configured, usable, allow_unmatched=self.allow_unmatched
+            )
+            if chosen is not self.configured:
+                logger.info("reason=brokerDiscovered,url=%s,attempt=%d", chosen.url, attempt + 1)
+                return True, chosen
+        else:
+            logger.info("reason=brokerNotFound,attempt=%d", attempt + 1)
         if (
             self.mode is BrokerMode.DISCOVERY_WITH_FALLBACK
             and self.configured is not None

@@ -10,7 +10,9 @@ module encodes that contract with no I/O, so the direct mDNS source
 from __future__ import annotations
 
 import copy
+import dataclasses
 import enum
+import ipaddress
 import logging
 import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -551,36 +553,85 @@ def rank_brokers(
     return [ep for ep, _ in kept]
 
 
+def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return None
+
+
+def _find_configured(
+    configured: BrokerEndpoint, ranked: Iterable[BrokerEndpoint]
+) -> tuple[BrokerEndpoint, BrokerEndpoint] | None:
+    """(discovered endpoint, endpoint to use) for the first match, or None."""
+    want = _norm_host(configured.host)
+    want_ip = _ip(configured.host)
+    for ep in ranked:
+        if want in (_norm_host(ep.host), _norm_host(ep.server)):
+            return ep, ep
+        if want_ip is not None and any(_ip(a.address) == want_ip for a in ep.addresses):
+            return ep, dataclasses.replace(ep, host=configured.host)
+    return None
+
+
+def match_configured(
+    configured: BrokerEndpoint, ranked: Iterable[BrokerEndpoint]
+) -> BrokerEndpoint | None:
+    """The discovered broker that is the configured one, or None.
+
+    A discovered broker matches when the configured host equals its TXT
+    ``broker`` name or SRV target (case-insensitive, trailing dot ignored) or,
+    for a configured IP address, one of its advertised addresses. The first
+    match in ``ranked`` is returned with its discovered port and transport;
+    a match by address keeps the configured address as ``host``.
+    """
+    found = _find_configured(configured, ranked)
+    return found[1] if found else None
+
+
 def select_broker(
     mode: BrokerMode | str | None,
     configured: BrokerEndpoint | None,
     ranked: Sequence[BrokerEndpoint],
+    *,
+    allow_unmatched: bool = False,
 ) -> BrokerEndpoint | None:
     """Choose the broker to connect to.
 
     - ``configured-only``: ``configured`` (discovery is ignored).
     - ``discovery-only``: the first of ``ranked``, or None.
-    - ``discovery-with-fallback``: a discovered broker, else ``configured``.
+    - ``discovery-with-fallback``: the discovered broker that matches
+      ``configured`` (see ``match_configured``), else ``configured``. A
+      different discovered broker is never chosen in place of the configured
+      one unless ``allow_unmatched`` is True, which restores the 0.4.0
+      behavior: the matching broker if any, else the first of ``ranked``.
+      With no ``configured``, the first of ``ranked``.
 
-    Choosing among several distinct discovered brokers is outside the
-    specification. The heuristic here: in ``discovery-with-fallback``, a
-    discovered broker whose host or SRV target matches the configured URL's
-    host wins; otherwise the first of ``ranked`` (the most-preferred
-    transport, then the lowest host name). The choice is logged. Configure
-    the intended broker's URL in a multi-broker deployment.
+    Choosing among several distinct discovered brokers in ``discovery-only``,
+    or with no configured broker, is outside the specification; here the
+    first of ``ranked`` wins (the
+    most-preferred transport, then the lowest host name). Each discovered
+    broker not chosen is logged.
     """
     mode = BrokerMode.parse(mode)
     if mode is BrokerMode.CONFIGURED_ONLY:
         return configured
     if not ranked:
         return configured if mode is BrokerMode.DISCOVERY_WITH_FALLBACK else None
-    chosen = ranked[0]
+    picked = ranked[0]  # the discovered endpoint chosen
+    chosen = picked
     if mode is BrokerMode.DISCOVERY_WITH_FALLBACK and configured is not None:
-        want = _norm_host(configured.host)
-        for ep in ranked:
-            if want in (_norm_host(ep.host), _norm_host(ep.server)):
-                chosen = ep
-                break
+        found = _find_configured(configured, ranked)
+        if found is not None:
+            picked, chosen = found
+        elif not allow_unmatched:
+            picked = chosen = configured
+    for ep in ranked:
+        if ep is not picked:
+            logger.info("reason=brokerNotChosen,url=%s,chosen=%s", ep.url, chosen.url)
+    if chosen is configured:
+        logger.info("reason=configuredBrokerNotDiscovered,url=%s", configured.url)
+        return configured
     if len(ranked) > 1:
         logger.info(
             "reason=brokerChosenAmongSeveral,count=%d,chosen=%s,candidates=%s",

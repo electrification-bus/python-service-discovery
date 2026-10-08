@@ -91,11 +91,11 @@ client = MqttClient.from_config(endpoint.mqtt_cfg(base_cfg), client_id="example-
 |---|---|
 | `configured-only` | Returns the configured broker. Never browses. |
 | `discovery-only` (the default when the mode is `None`) | Browses until a broker is found, or until `stop` is set or the schedule's `max_attempts` runs out (then `None`). |
-| `discovery-with-fallback` | Browses; if the first three attempts (or all of them, when `max_attempts` is fewer) find nothing, returns the configured broker. |
+| `discovery-with-fallback` | Browses for the configured broker; if the first three attempts (or all of them, when `max_attempts` is fewer) do not find it, returns the configured broker. Another discovered broker is never chosen in its place unless `allow_unmatched=True`. With no configured broker, behaves as `discovery-only`. |
 
 Each attempt browses `_secure-mqtt._tcp`, `_mqtt-wss._tcp`, `_mqtt-ws._tcp` and `_mqtt._tcp` for `browse_timeout` seconds (default 3). A broker advertised under several types counts once, at its most preferred type, in the specification's order. The WebSocket types are logged but not selected, since ebus-mqtt-client connects over TCP. When TLS is configured (an `mqtts://` URL or `use_tls` in `base_cfg`), only `_secure-mqtt._tcp` is selected, so the credentials are never sent in cleartext to a plain broker that answered the multicast query. Pass `accept=` to change either. Attempts follow `RetrySchedule`: three attempts 3 s apart, then one every 30 s. The broker host is the TXT `broker` value when advertised, otherwise the SRV target. There is no reachability probe: connecting is the probe.
 
-When several distinct brokers are found, the specification leaves the choice to the implementation. `select_broker()` prefers, in `discovery-with-fallback`, a discovered broker whose host matches the configured one; otherwise the most preferred transport, then the lowest host name. It logs that it chose among several. Configure the intended broker's URL in a multi-broker deployment.
+In `discovery-with-fallback`, a discovered broker is the configured one when the configured host equals its TXT `broker` name or SRV target, or, for a host configured as an IP address, one of its advertised addresses (`match_configured()`). Discovery then supplies its current port and transport; a match by address keeps the configured address as the host. In `discovery-only`, or with no configured broker, the specification leaves the choice among several to the implementation: `select_broker()` takes the most preferred transport, then the lowest host name. Every discovered broker not chosen is logged. Configure the intended broker's URL in a multi-broker deployment.
 
 ### Advertise
 
