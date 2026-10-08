@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `ebus-mqtt-client` moved from a dependency to the new `[mqtt]` extra; the base package has no dependencies. Install `ebus-service-discovery[mqtt]` for the bus source (`ServiceResolver.watch()` with an `MqttClient`) and the `service-discovery` CLI. A CLI command that needs a broker exits with status 2 and names the extra when the client is missing. A Yocto recipe lists `python3-ebus-mqtt-client` in `RDEPENDS` itself. `setup.py` mirrors the extras for setuptools 59.5.
+- CI tests Python 3.10 through 3.13.
+
+### Added
+
+- `[zeroconf]` extra (`zeroconf>=0.131.0`) for direct mDNS. Importing `ebus_service_discovery` loads neither `zeroconf` nor `ebus_mqtt_client`.
+- `ServiceInstance`, a transport-neutral DNS-SD service instance, and `Record.to_instance()`.
+- `ebus_service_discovery.ebus` (standard library only): the eBus discovery contract. Service-type constants, `BROKER_PREFERENCE`, `TCP_BROKER_TYPES`, `BrokerMode` (with `parse`), `BrokerEndpoint` (`from_instance`, `from_url`, `from_mqtt_cfg`, `mqtt_cfg`), `rank_brokers`, `select_broker`, `RetrySchedule`, `Identity` and `HttpService` (TXT records with size checks and `TxtSizeWarning`), `decode_txt` and `parse_ebus_txt`.
+- `ebus_service_discovery.mdns`: `browse`, `browse_many`, `find_broker` (the three broker modes, preference order, retry schedule, no reachability probe), `os_hostname`, `new_zeroconf` and `Advertiser`, which registers `_ebus._tcp`, `_device-info._tcp` and optional `_http._tcp` / `_https._tcp` under the host's existing `.local` name and renames the instance `-2` through `-99` on a conflict.
+- `ebus_service_discovery.mdns_async`: the same operations for asyncio, on a caller-owned `AsyncZeroconf` that is never created or closed here.
+- Live mDNS tests, run with `EBUS_SD_LIVE=1`.
+
 ## [0.3.2] - 2026-07-18
 
 ### Fixed
