@@ -5,9 +5,10 @@ remove), ``resolve`` (find a reachable endpoint for a service), ``validate``
 (check records against the bundled JSON Schema), ``snapshot`` (capture the bus
 plus metadata to a JSON file) and ``diff`` (fuzzy-compare two snapshots -- "is
 this network kinda the same?"). ``--json`` switches every command to
-machine-readable output for ``jq`` post-processing. The MQTT client is imported
-lazily inside the commands that need a broker, so the pure formatters (and the
-whole snapshot/diff path) remain importable and testable without one.
+machine-readable output for ``jq`` post-processing. The MQTT client (the
+``[mqtt]`` extra) is imported lazily inside the commands that need a broker, so
+the pure formatters (and the whole snapshot/diff path) remain importable and
+testable without one.
 """
 
 from __future__ import annotations
@@ -378,6 +379,21 @@ def render_stats(char: dict, meta: dict | None = None, publisher_state: str | No
 
 # --- MQTT-backed commands (lazy import) -----------------------------------
 
+MQTT_EXTRA_HINT = (
+    "this command needs the MQTT client, which is not installed; "
+    'install it with: pip install "ebus-service-discovery[mqtt]"'
+)
+
+
+def _mqtt_client_class():
+    """Return ``ebus_mqtt_client.MqttClient``, or exit naming the ``[mqtt]`` extra."""
+    try:
+        from ebus_mqtt_client import MqttClient
+    except ImportError:
+        print(f"service-discovery: {MQTT_EXTRA_HINT}", file=sys.stderr)
+        raise SystemExit(2) from None
+    return MqttClient
+
 
 def _collect(host, port, patterns, window, base):
     """Connect, subscribe, collect the latest Record per topic for `window` s.
@@ -386,7 +402,7 @@ def _collect(host, port, patterns, window, base):
     (and any other ``$``-prefixed attribute) is captured separately as bus
     health, never parsed as a record.
     """
-    from ebus_mqtt_client import MqttClient
+    MqttClient = _mqtt_client_class()
 
     records: dict[str, Record] = {}
     state: dict[str, str | None] = {"publisher": None}
@@ -442,7 +458,7 @@ def cmd_dump(args) -> int:
 
 
 def cmd_watch(args) -> int:
-    from ebus_mqtt_client import MqttClient
+    MqttClient = _mqtt_client_class()
 
     def handler(topic, payload):
         now = datetime.now(timezone.utc)
@@ -507,7 +523,7 @@ def cmd_watch(args) -> int:
 
 
 def cmd_resolve(args) -> int:
-    from ebus_mqtt_client import MqttClient
+    MqttClient = _mqtt_client_class()
 
     mqtt = MqttClient(_CLIENT_ID, args.host, args.port)
     resolver = ServiceResolver(mqtt, base=args.base)
@@ -529,7 +545,7 @@ def cmd_validate(args) -> int:
             data = json.load(fh)
         records = data if isinstance(data, list) else [data]
     else:
-        from ebus_mqtt_client import MqttClient
+        MqttClient = _mqtt_client_class()
 
         collected: dict[str, dict] = {}
 

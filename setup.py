@@ -14,6 +14,9 @@ console_scripts are declared here too (not just pyproject.toml's
 [project.scripts]) because setuptools 59.5.0 ignores the PEP 621 entry-point
 tables; without this the `service-discovery` CLI would not be installed in a
 kirkstone image. Keep the two lists in sync.
+
+The extras are mirrored here for the same reason: setuptools 59.5.0 does not
+read [project.optional-dependencies]. Keep them in sync with pyproject.toml.
 """
 
 import re
@@ -33,6 +36,14 @@ setup(
     package_dir={"": "src"},
     packages=["ebus_service_discovery"],
     package_data={"ebus_service_discovery": ["record.schema.json", "py.typed"]},
+    python_requires=">=3.10",
+    install_requires=[],
+    extras_require={
+        "mqtt": ["ebus-mqtt-client>=0.1.7"],
+        "zeroconf": ["zeroconf>=0.131.0"],
+        "validation": ["jsonschema>=4.0"],
+        "dev": ["pytest", "ruff>=0.15.0", "jsonschema>=4.0", "zeroconf>=0.131.0"],
+    },
     entry_points={
         "console_scripts": [
             "service-discovery = ebus_service_discovery.cli:main",

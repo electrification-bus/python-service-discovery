@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -325,3 +326,23 @@ def test_render_stats_smoke():
 def test_main_requires_subcommand():
     with pytest.raises(SystemExit):
         main([])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["dump"], ["watch"], ["resolve", "_example._tcp"], ["validate"], ["snapshot"], ["stats"]],
+)
+def test_mqtt_commands_name_the_extra_when_client_missing(monkeypatch, capsys, argv):
+    # A None entry in sys.modules makes `import ebus_mqtt_client` raise ImportError.
+    monkeypatch.setitem(sys.modules, "ebus_mqtt_client", None)
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
+    assert "ebus-service-discovery[mqtt]" in capsys.readouterr().err
+
+
+def test_offline_commands_work_without_mqtt_client(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "ebus_mqtt_client", None)
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(_record().to_dict()))
+    assert main(["validate", "--file", str(p)]) == 0
