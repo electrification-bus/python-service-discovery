@@ -71,8 +71,18 @@ def _zeroconf(zc: Zeroconf | None) -> Iterator[Zeroconf]:
         own.close()
 
 
+#: Seconds ``_run`` waits for a cancelled coroutine to unwind (withdraw services).
+CANCEL_GRACE = 5.0
+
+
 def _run(zc: Zeroconf, coro, timeout: float | None = None):
-    """Run a coroutine on ``zc``'s event loop from another thread."""
+    """Run a coroutine on ``zc``'s event loop from another thread.
+
+    If the wait is interrupted (``KeyboardInterrupt``, ``timeout``), the
+    coroutine is cancelled and given up to ``CANCEL_GRACE`` seconds to unwind
+    before the exception propagates, so an interrupted ``Advertiser.start``
+    withdraws what it registered on a shared ``Zeroconf``.
+    """
     loop = zc.loop
     if loop is None or not loop.is_running():
         coro.close()
@@ -86,7 +96,25 @@ def _run(zc: Zeroconf, coro, timeout: float | None = None):
         raise RuntimeError(
             "called from the Zeroconf event loop; use ebus_service_discovery.mdns_async"
         )
-    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+    started = threading.Event()
+    finished = threading.Event()
+
+    async def guarded():
+        started.set()
+        try:
+            return await coro
+        finally:
+            finished.set()
+
+    future = asyncio.run_coroutine_threadsafe(guarded(), loop)
+    try:
+        return future.result(timeout)
+    except BaseException:
+        if not future.done():
+            future.cancel()
+            if started.is_set():  # a task cancelled before it started has nothing to undo
+                finished.wait(CANCEL_GRACE)
+        raise
 
 
 def browse(

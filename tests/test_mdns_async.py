@@ -22,8 +22,8 @@ from ebus_service_discovery.ebus import HttpService, RetrySchedule  # noqa: E402
 
 
 class FakeAsyncZeroconf:
-    def __init__(self):
-        self.zeroconf = FakeZeroconf(start_loop=False)
+    def __init__(self, **kw):
+        self.zeroconf = FakeZeroconf(start_loop=False, **kw)
         self.closed = False
 
     async def async_close(self):  # pragma: no cover - must never be called
@@ -51,6 +51,36 @@ def test_async_advertiser():
     assert not adv.running
     assert aiozc.zeroconf.registered == {}
     assert not aiozc.closed and not aiozc.zeroconf.closed
+
+
+async def _cancel_start_once(aiozc, registered_count):
+    adv = mdns_async.Advertiser(IDENT, aiozc)
+    task = asyncio.ensure_future(adv.start())
+    while len(aiozc.zeroconf.registered) < registered_count:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await adv.stop()
+    return adv
+
+
+@pytest.mark.usefixtures("os_name")
+def test_cancelled_start_during_announcements_withdraws_services():
+    aiozc = FakeAsyncZeroconf(hold_broadcast=True)
+    adv = asyncio.run(_cancel_start_once(aiozc, 2))
+    assert not adv.running
+    assert aiozc.zeroconf.registered == {}
+    assert len(aiozc.zeroconf.unregistered) == 2
+
+
+@pytest.mark.usefixtures("os_name")
+def test_cancelled_start_during_probing_withdraws_services():
+    aiozc = FakeAsyncZeroconf(probing={"host-1._device-info._tcp.local."})
+    adv = asyncio.run(_cancel_start_once(aiozc, 1))
+    assert not adv.running
+    assert aiozc.zeroconf.registered == {}
+    assert aiozc.zeroconf.unregistered == ["host-1._ebus._tcp.local."]
 
 
 def test_async_find_broker(monkeypatch):

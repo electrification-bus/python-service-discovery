@@ -422,21 +422,37 @@ async def async_register(
     All services share one instance name: when any of them conflicts, the ones
     already registered are withdrawn and the next name is tried. Returns the
     name used and the registered infos.
+
+    If this coroutine is cancelled or fails part way, every service it
+    registered is withdrawn before the exception propagates, so none is left
+    on a caller's ``Zeroconf`` with no ``Advertiser`` holding it.
     """
     for name in instance_candidates(base_name):
         infos = build(name)
-        results = await asyncio.gather(
-            *(zc.async_register_service(info) for info in infos), return_exceptions=True
-        )
-        failed = [r for r in results if isinstance(r, BaseException)]
-        if not failed:
-            await asyncio.gather(*results)  # the announcement broadcasts
-            if name != base_name:
-                logger.info("reason=instanceRenamed,from=%s,to=%s", base_name, name)
-            return name, infos
-        registered = [
-            i for i, r in zip(infos, results, strict=True) if not isinstance(r, BaseException)
-        ]
+        registered: list[ServiceInfo] = []
+
+        async def register(info: ServiceInfo, registered: list[ServiceInfo] = registered):
+            broadcast = await zc.async_register_service(info)
+            # No await between the registry add and here, so this list is
+            # exactly what is in the registry when a cancellation lands.
+            registered.append(info)
+            return broadcast
+
+        try:
+            results = await asyncio.gather(
+                *(register(info) for info in infos), return_exceptions=True
+            )
+            failed = [r for r in results if isinstance(r, BaseException)]
+            if not failed:
+                await asyncio.gather(*results)  # the announcement broadcasts
+                if name != base_name:
+                    logger.info("reason=instanceRenamed,from=%s,to=%s", base_name, name)
+                return name, infos
+        except BaseException:
+            if registered:
+                # Shielded: a second cancellation must not cut the withdrawal short.
+                await asyncio.shield(async_unregister(zc, list(registered)))
+            raise
         if registered:
             await async_unregister(zc, registered)
         unexpected = [

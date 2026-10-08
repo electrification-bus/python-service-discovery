@@ -1,6 +1,7 @@
 """Unit tests for the zeroconf-backed modules, with fakes (no network)."""
 
 import asyncio
+import concurrent.futures
 import inspect
 import ipaddress
 import logging
@@ -291,8 +292,10 @@ def test_mqtt_cfg_round_trip(monkeypatch):
 class FakeZeroconf:
     """Enough of zeroconf.Zeroconf for the advertiser, on a real loop thread."""
 
-    def __init__(self, taken=(), start_loop=True):
+    def __init__(self, taken=(), start_loop=True, probing=(), hold_broadcast=False):
         self.taken = set(taken)
+        self.probing = set(probing)  # names whose probe never finishes
+        self.hold_broadcast = hold_broadcast  # announcements never finish
         self.registered: dict[str, ServiceInfo] = {}
         self.unregistered: list[str] = []
         self.sent = []
@@ -309,9 +312,12 @@ class FakeZeroconf:
     async def async_register_service(self, info):
         if info.name in self.taken or info.name in self.registered:
             raise NonUniqueNameException(info.name)
+        if info.name in self.probing:
+            await asyncio.Event().wait()
         self.registered[info.name] = info
         fut = asyncio.get_running_loop().create_future()
-        fut.set_result(None)
+        if not self.hold_broadcast:
+            fut.set_result(None)
         return fut
 
     async def async_unregister_service(self, info):
@@ -506,6 +512,27 @@ def test_advertiser_never_publishes_addresses_under_os_name(os_name, caplog):
         assert adv.server == "host-1.local."
         assert all(info.addresses == [] for info in adv.infos)
     assert "addressesIgnoredUnderOsHostname,server=host-1.local.,addresses=192.0.2.5" in caplog.text
+    zc.close()
+
+
+def test_interrupted_sync_start_withdraws_what_it_registered(os_name):
+    zc = FakeZeroconf(hold_broadcast=True)
+    plan = _mdns_core.AdvertisementPlan(
+        IDENT,
+        port=None,
+        device_info_port=0,
+        http=None,
+        server=None,
+        addresses=None,
+        instance_name=None,
+    )
+    with pytest.raises(concurrent.futures.TimeoutError):
+        mdns._run(zc, _mdns_core.async_advertise(zc, plan, 1.0), timeout=0.3)
+    assert zc.registered == {}
+    assert sorted(zc.unregistered) == [
+        "host-1._device-info._tcp.local.",
+        "host-1._ebus._tcp.local.",
+    ]
     zc.close()
 
 
