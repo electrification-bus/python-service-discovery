@@ -187,9 +187,12 @@ class Advertiser:
     answering for its own name. ``start`` raises ``RuntimeError`` when an OS
     responder is present (macOS, a running avahi-daemon) but does not answer
     within ``detect_timeout``. With no OS responder the target is
-    ``<gethostname>.local`` and this host's addresses are published, unless
-    another host answers for that name. ``server`` (and ``addresses``) skip
-    the detection. See ``_mdns_core`` for the measurements behind this.
+    ``<gethostname>.local`` and this host's addresses (or ``addresses``) are
+    published, unless another host answers for that name. ``server`` skips
+    the detection and is published with ``addresses`` (default none).
+    ``addresses`` without ``server`` is never published under the OS
+    responder's name: it is ignored there, with a warning. See ``_mdns_core``
+    for the measurements behind this.
 
     ``port`` is the ``_ebus._tcp`` SRV port (default: the first HTTP port, else
     0); ``device_info_port`` is the ``_device-info._tcp`` port (default 0).

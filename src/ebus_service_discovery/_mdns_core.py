@@ -498,8 +498,9 @@ class AdvertisementPlan:
 
         An explicit ``server`` is used as given, with ``addresses`` (default
         none: something else answers for the name). Otherwise the OS responder's
-        name is used with no addresses; with no OS responder, the fallback name
-        with this host's own addresses.
+        name is used with no addresses, and ``addresses`` is ignored with a
+        warning; with no OS responder, the fallback name with ``addresses``
+        (default: this host's own addresses).
         """
         if self.server:
             server = self.server if self.server.endswith(".") else self.server + "."
@@ -507,7 +508,13 @@ class AdvertisementPlan:
         os_name = await async_os_hostname(zc, detect_timeout)
         if os_name:
             logger.info("reason=advertiseUnderOsHostname,server=%s", os_name)
-            return os_name, self.addresses or []
+            if self.addresses:
+                logger.warning(
+                    "reason=addressesIgnoredUnderOsHostname,server=%s,addresses=%s",
+                    os_name,
+                    ",".join(self.addresses),
+                )
+            return os_name, []
         if os_responder_present():
             raise RuntimeError(
                 "the OS mDNS responder did not answer for this host's name within "

@@ -497,6 +497,18 @@ def test_advertiser_explicit_server_skips_detection(monkeypatch):
     zc.close()
 
 
+def test_advertiser_never_publishes_addresses_under_os_name(os_name, caplog):
+    zc = FakeZeroconf()
+    with (
+        caplog.at_level(logging.WARNING),
+        mdns.Advertiser(IDENT, zc=zc, addresses=["192.0.2.5"]) as adv,
+    ):
+        assert adv.server == "host-1.local."
+        assert all(info.addresses == [] for info in adv.infos)
+    assert "addressesIgnoredUnderOsHostname,server=host-1.local.,addresses=192.0.2.5" in caplog.text
+    zc.close()
+
+
 def test_advertiser_without_os_responder_publishes_own_addresses(monkeypatch):
     async def none(zc, timeout=3.0, addresses=None):
         return None
