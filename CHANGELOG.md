@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
 ### Changed
 
 - **Breaking:** `ebus-mqtt-client` moved from a dependency to the new `[mqtt]` extra; the base package has no dependencies. Install `ebus-service-discovery[mqtt]` for the bus source (`ServiceResolver.watch()` with an `MqttClient`) and the `service-discovery` CLI. A CLI command that needs a broker exits with status 2 and names the extra when the client is missing. A Yocto recipe lists `python3-ebus-mqtt-client` in `RDEPENDS` itself. `setup.py` mirrors the extras for setuptools 59.5.
