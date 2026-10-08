@@ -14,8 +14,11 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from ebus_service_discovery.instance import ServiceInstance
 
 SCHEMA_VERSION = 1
 DEFAULT_TOPIC_BASE = "local/mdns/discovery/v1"
@@ -179,6 +182,23 @@ class Record:
         return sorted(
             (a for a in self.addresses if a.is_usable_candidate),
             key=lambda a: a.preference,
+        )
+
+    def to_instance(self) -> ServiceInstance:
+        """This record as a transport-neutral ``ServiceInstance``.
+
+        The bus state (freshness, tombstone) is dropped; the interface is kept.
+        """
+        from ebus_service_discovery.instance import ServiceInstance, strip_dot
+
+        return ServiceInstance(
+            service_type=self.service_type,
+            instance_name=self.instance_name,
+            server=strip_dot(self.hostname),
+            port=self.port,
+            addresses=tuple(self.addresses),
+            txt=dict(self.txt),
+            interface=self.interface,
         )
 
     def to_dict(self) -> dict[str, Any]:
