@@ -480,6 +480,16 @@ class BrokerEndpoint:
         port = parts.port or BROKER_DEFAULT_PORT[service_type]
         return cls(service_type=service_type, host=parts.hostname, port=port)
 
+    @classmethod
+    def from_mqtt_cfg(cls, cfg: Mapping) -> BrokerEndpoint:
+        """The broker an ebus-mqtt-client config names (``host``, ``port``, ``use_tls``)."""
+        host = str(cfg.get("host") or "").strip()
+        if not host:
+            raise ValueError("broker config has no host")
+        service_type = SECURE_MQTT_SERVICE if cfg.get("use_tls") else MQTT_SERVICE
+        port = int(cfg.get("port") or BROKER_DEFAULT_PORT[service_type])
+        return cls(service_type=service_type, host=host, port=port)
+
     def mqtt_cfg(self, base: Mapping | None = None) -> dict:
         """A copy of an ebus-mqtt-client config with this broker's address.
 

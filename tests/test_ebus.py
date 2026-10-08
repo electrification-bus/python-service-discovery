@@ -346,6 +346,20 @@ def test_endpoint_from_url(url, stype, host, port):
     assert (ep.service_type, ep.host, ep.port) == (stype, host, port)
 
 
+def test_endpoint_from_mqtt_cfg():
+    ep = BrokerEndpoint.from_mqtt_cfg({"host": "b.local", "use_tls": True})
+    assert (ep.service_type, ep.host, ep.port, ep.use_tls) == (
+        SECURE_MQTT_SERVICE,
+        "b.local",
+        8883,
+        True,
+    )
+    ep = BrokerEndpoint.from_mqtt_cfg({"host": "192.0.2.8", "port": 1999})
+    assert (ep.service_type, ep.port, ep.use_tls) == (MQTT_SERVICE, 1999, False)
+    with pytest.raises(ValueError, match="no host"):
+        BrokerEndpoint.from_mqtt_cfg({"port": 1883})
+
+
 def test_endpoint_url_brackets_ipv6():
     assert BrokerEndpoint.from_url("mqtt://[2001:db8::7]").url == "mqtt://[2001:db8::7]:1883"
 
