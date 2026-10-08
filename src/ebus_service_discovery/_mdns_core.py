@@ -71,10 +71,12 @@ from ebus_service_discovery.ebus import (
     BROKER_PREFERENCE,
     DEVICE_INFO_SERVICE,
     EBUS_SERVICE,
+    ROLE_BROKER_HOST,
     SECURE_MQTT_SERVICE,
     TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     decode_txt,
@@ -425,6 +427,7 @@ def build_infos(
     port: int,
     device_info_port: int,
     http: Sequence[HttpService],
+    brokers: Sequence[BrokerService] = (),
 ) -> list[ServiceInfo]:
     """The ``ServiceInfo`` objects one advertisement registers."""
     services: list[tuple[str, int, dict[str, str]]] = [
@@ -432,6 +435,7 @@ def build_infos(
         (DEVICE_INFO_SERVICE, device_info_port, identity.device_info_txt()),
     ]
     services += [(h.service_type, h.port, h.txt(identity)) for h in http]
+    services += [(b.service_type, b.port or 0, b.txt(identity, server)) for b in brokers]
     infos = []
     for service_type, svc_port, txt in services:
         full = fq_type(service_type)
@@ -528,6 +532,7 @@ class AdvertisementPlan:
         server: str | None,
         addresses: Sequence[str] | None,
         instance_name: str | None,
+        brokers: BrokerService | Sequence[BrokerService] | None = None,
     ):
         self.identity = identity
         if http is None:
@@ -536,6 +541,12 @@ class AdvertisementPlan:
             self.http = (http,)
         else:
             self.http = tuple(http)
+        if brokers is None:
+            self.brokers: tuple[BrokerService, ...] = ()
+        elif isinstance(brokers, BrokerService):
+            self.brokers = (brokers,)
+        else:
+            self.brokers = tuple(brokers)
         if port is None:
             port = self.http[0].port if self.http else 0
         self.port = port
@@ -545,6 +556,14 @@ class AdvertisementPlan:
         self.instance_name = instance_name
         for h in self.http:
             h.txt(identity)  # validate before touching the network
+        types = [b.service_type for b in self.brokers]
+        dup = sorted({t for t in types if types.count(t) > 1})
+        if dup:
+            raise ValueError(f"more than one BrokerService of type {', '.join(dup)}")
+        for b in self.brokers:
+            b.txt(identity, server or "host.local.")  # the SRV target is not known yet
+        if self.brokers and ROLE_BROKER_HOST not in identity.roles:
+            logger.warning("reason=brokersWithoutBrokerHostRole,roles=%s", ",".join(identity.roles))
 
     async def async_resolve_host(
         self, zc: Zeroconf, detect_timeout: float
@@ -616,6 +635,7 @@ class AdvertisementPlan:
                 self.port,
                 self.device_info_port,
                 self.http,
+                self.brokers,
             )
 
         return build

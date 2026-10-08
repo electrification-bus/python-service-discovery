@@ -24,6 +24,7 @@ from ebus_service_discovery import _mdns_core as core
 from ebus_service_discovery.ebus import (
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -124,6 +125,7 @@ class Advertiser:
         aiozc: AsyncZeroconf,
         *,
         http: HttpService | Sequence[HttpService] | None = None,
+        brokers: BrokerService | Sequence[BrokerService] | None = None,
         port: int | None = None,
         device_info_port: int = 0,
         server: str | None = None,
@@ -140,6 +142,7 @@ class Advertiser:
             server=server,
             addresses=addresses,
             instance_name=instance_name,
+            brokers=brokers,
         )
         self._aiozc = aiozc
         self._detect_timeout = detect_timeout

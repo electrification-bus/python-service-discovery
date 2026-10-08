@@ -117,7 +117,31 @@ with mdns.Advertiser(identity, http=HttpService(port=8080, openapi="/api/v1/open
     ...  # run the client
 ```
 
-`Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`) under one instance name: `instance_name=` if given, else the first of `Identity.device_ids`, else (for a device id over 60 bytes) the host's label. If another advertiser already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
+`Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`, and a broker service type for each `BrokerService`) under one instance name: `instance_name=` if given, else the first of `Identity.device_ids`, else (for a device id over 60 bytes) the host's label. If another advertiser already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
+
+A host that runs an MQTT broker advertises it with `brokers=`, one `BrokerService` per transport its broker listens on. On a Linux broker host running avahi-daemon:
+
+```python
+from ebus_service_discovery import mdns
+from ebus_service_discovery.ebus import MQTT_SERVICE, BrokerService, Identity
+
+identity = Identity(
+    device_ids=["example-gateway-1"],
+    roles=["broker-host", "device"],
+    manufacturer="Example",
+    model="GW-1",
+    serial_number="sn-0100",
+)
+brokers = [
+    BrokerService(),  # _secure-mqtt._tcp on 8883, TXT broker = this host's .local name
+    BrokerService(MQTT_SERVICE, port=1883),  # plain MQTT, only where TLS is not feasible
+]
+with mdns.Advertiser(identity, brokers=brokers) as adv:
+    print(adv.instance_name, "advertises", [b.endpoint(adv.server).url for b in brokers])
+    ...  # run until shutdown
+```
+
+`BrokerService` takes any of `BROKER_PREFERENCE`; `port` defaults to the type's `BROKER_DEFAULT_PORT`. Its TXT carries the keys the specification lists for the type: `txtvers` and `protocol` (default `mqtt-v5`) always, `broker` and `device_id` for `_secure-mqtt._tcp`, and `path` and `subprotocol` (default `/mqtt` and `mqtt`) for `_mqtt-ws._tcp` and `_mqtt-wss._tcp`. `broker` defaults to the SRV target; set `broker=` to the name the broker's certificate is issued for when that differs. `endpoint(server)` returns the `BrokerEndpoint` a client resolves from the advertisement. One `BrokerService` per type is allowed, and `brokers=` with no `broker-host` role in `identity.roles` logs a warning.
 
 The rename probe detects only names another responder advertises with a PTR record for the service type. macOS mDNSResponder publishes a bare TXT record at `<host label>._device-info._tcp.local.`, which the probe does not see, so an instance named after the host label on macOS shares that name with the OS record and resolvers see two TXT record sets for it. On macOS, pass `instance_name=` when the default would be the host label (a device id over 60 bytes, or one equal to the host label), and never pass the host label itself.
 

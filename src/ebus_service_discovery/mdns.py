@@ -33,6 +33,7 @@ from ebus_service_discovery import _mdns_core as core
 from ebus_service_discovery.ebus import (
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -222,7 +223,9 @@ class Advertiser:
     """Advertise this entity's eBus services under the host's ``.local`` name.
 
     Registers ``_ebus._tcp`` and ``_device-info._tcp`` from ``identity``, and
-    ``_http._tcp`` / ``_https._tcp`` for each ``HttpService`` in ``http``.
+    ``_http._tcp`` / ``_https._tcp`` for each ``HttpService`` in ``http``,
+    and one broker service type for each ``BrokerService`` in ``brokers`` (at
+    most one per type; its TXT ``broker`` defaults to the SRV target).
     All share one instance name: ``instance_name``, else the first of
     ``identity.device_ids`` (the host label if that is over 60 bytes). On a
     conflict it becomes ``<name>-2`` through ``<name>-99``. The conflict probe
@@ -251,6 +254,7 @@ class Advertiser:
         identity: Identity,
         *,
         http: HttpService | Sequence[HttpService] | None = None,
+        brokers: BrokerService | Sequence[BrokerService] | None = None,
         zc: Zeroconf | None = None,
         port: int | None = None,
         device_info_port: int = 0,
@@ -267,6 +271,7 @@ class Advertiser:
             server=server,
             addresses=addresses,
             instance_name=instance_name,
+            brokers=brokers,
         )
         self._zc = zc
         self._own_zc: Zeroconf | None = None

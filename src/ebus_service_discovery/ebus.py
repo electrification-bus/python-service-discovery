@@ -413,6 +413,83 @@ def broker_uses_tls(service_type: str) -> bool:
     return _BROKER_TLS.get(service_type, False)
 
 
+#: MQTT protocol versions the specification names for the broker TXT ``protocol`` key.
+MQTT_PROTOCOLS: tuple[str, ...] = ("mqtt-v5", "mqtt-v3.1.1")
+
+_WS_BROKER_TYPES: frozenset[str] = frozenset({MQTT_WSS_SERVICE, MQTT_WS_SERVICE})
+
+
+@dataclass(frozen=True)
+class BrokerService:
+    """An MQTT broker this host runs, to advertise as one of ``BROKER_PREFERENCE``.
+
+    The TXT carries the keys framework.md ("MQTT Broker Advertisement") lists
+    for the type: ``txtvers`` and ``protocol`` always; ``broker`` and
+    ``device_id`` for ``_secure-mqtt._tcp``; ``path`` and ``subprotocol`` for
+    ``_mqtt-ws._tcp`` and ``_mqtt-wss._tcp``. ``broker`` defaults to the
+    advertised SRV target; set it to the name the broker's certificate is
+    issued for when that differs. ``port`` defaults to the type's
+    ``BROKER_DEFAULT_PORT``. ``extra_txt`` adds keys the specification does
+    not define for the type.
+    """
+
+    service_type: str = SECURE_MQTT_SERVICE
+    port: int | None = None
+    protocol: str = "mqtt-v5"
+    broker: str | None = None
+    path: str = "/mqtt"
+    subprotocol: str = "mqtt"
+    extra_txt: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.service_type not in BROKER_PREFERENCE:
+            valid = ", ".join(BROKER_PREFERENCE)
+            raise ValueError(
+                f"unknown broker service type {self.service_type!r}; expected one of {valid}"
+            )
+        if self.port is None:
+            object.__setattr__(self, "port", BROKER_DEFAULT_PORT[self.service_type])
+        if self.protocol not in MQTT_PROTOCOLS:
+            logger.warning("reason=unknownMqttProtocol,protocol=%s", self.protocol)
+
+    def _broker_name(self, server: str) -> str | None:
+        """The TXT ``broker`` value, or None when the record carries none."""
+        if self.service_type == SECURE_MQTT_SERVICE:
+            return strip_dot(self.broker or server)
+        extra = self.extra_txt.get("broker")
+        return strip_dot(extra) if extra else None
+
+    def txt(self, identity: Identity, server: str) -> dict[str, str]:
+        """The TXT record, for an advertisement whose SRV target is ``server``."""
+        txt = {"txtvers": TXTVERS, "protocol": self.protocol}
+        if self.service_type == SECURE_MQTT_SERVICE:
+            txt["broker"] = strip_dot(self.broker or server)
+            txt["device_id"] = identity.device_id
+        elif self.service_type in _WS_BROKER_TYPES:
+            txt["path"] = self.path
+            txt["subprotocol"] = self.subprotocol
+        for k, v in self.extra_txt.items():
+            txt.setdefault(k, v)
+        check_txt(self.service_type, txt)
+        return txt
+
+    def endpoint(self, server: str, identity: Identity | None = None) -> BrokerEndpoint:
+        """The ``BrokerEndpoint`` a client resolves from this advertisement.
+
+        ``host`` follows ``BrokerEndpoint.from_instance``: the TXT ``broker``
+        value, else ``server``. With ``identity``, ``txt`` is the advertised
+        TXT record.
+        """
+        assert self.port is not None  # set by __post_init__
+        return BrokerEndpoint(
+            service_type=self.service_type,
+            host=self._broker_name(server) or strip_dot(server),
+            port=self.port,
+            txt=self.txt(identity, server) if identity is not None else {},
+            server=strip_dot(server),
+        )
+
+
 @dataclass(frozen=True)
 class BrokerEndpoint:
     """A broker to connect to, discovered or configured.

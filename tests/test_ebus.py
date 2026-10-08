@@ -17,6 +17,7 @@ from ebus_service_discovery.ebus import (
     TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -287,6 +288,86 @@ def test_http_service_txt():
         "device_type": "example-type",
         "openapi": "/api/v1/openapi.yml",
     }
+
+
+# --- BrokerService ----------------------------------------------------------
+
+
+def test_broker_service_txt_per_type():
+    ident = _identity(device_ids=["dev-1", "dev-2"], roles=["broker-host"])
+    server = "host-1.local."
+    assert BrokerService().txt(ident, server) == {
+        "txtvers": "1",
+        "protocol": "mqtt-v5",
+        "broker": "host-1.local",
+        "device_id": "dev-1,dev-2",
+    }
+    for stype in (MQTT_WSS_SERVICE, MQTT_WS_SERVICE):
+        assert BrokerService(stype).txt(ident, server) == {
+            "txtvers": "1",
+            "protocol": "mqtt-v5",
+            "path": "/mqtt",
+            "subprotocol": "mqtt",
+        }
+    assert BrokerService(MQTT_SERVICE, protocol="mqtt-v3.1.1").txt(ident, server) == {
+        "txtvers": "1",
+        "protocol": "mqtt-v3.1.1",
+    }
+
+
+def test_broker_service_defaults_and_overrides():
+    assert [BrokerService(t).port for t in BROKER_PREFERENCE] == [8883, 9002, 9001, 1883]
+    svc = BrokerService(port=18883, broker="broker.example.local.", extra_txt={"x": "1"})
+    txt = svc.txt(_identity(), "host-1.local.")
+    assert txt["broker"] == "broker.example.local"
+    assert txt["x"] == "1"
+    # extra_txt never replaces a key the specification defines
+    assert (
+        BrokerService(MQTT_SERVICE, extra_txt={"protocol": "x"}).txt(_identity(), "h.local.")[
+            "protocol"
+        ]
+        == "mqtt-v5"
+    )
+
+
+def test_broker_service_rejects_unknown_type_and_logs_unknown_protocol(caplog):
+    with pytest.raises(ValueError, match="unknown broker service type"):
+        BrokerService("_http._tcp")
+    with caplog.at_level(logging.WARNING):
+        BrokerService(protocol="mqtt-v4")
+    assert "reason=unknownMqttProtocol,protocol=mqtt-v4" in caplog.text
+
+
+def test_broker_service_txt_too_long():
+    with pytest.raises(ValueError, match="at most 255"):
+        BrokerService(extra_txt={"x": "y" * 300}).txt(_identity(), "h.local.")
+
+
+@pytest.mark.parametrize(
+    "svc,host",
+    [
+        (BrokerService(), "host-1.local"),
+        (BrokerService(broker="broker.example.local"), "broker.example.local"),
+        (BrokerService(MQTT_SERVICE), "host-1.local"),
+        (BrokerService(MQTT_WS_SERVICE, port=8080), "host-1.local"),
+        (BrokerService(MQTT_SERVICE, extra_txt={"broker": "b.local."}), "b.local"),
+    ],
+)
+def test_broker_service_endpoint_matches_what_a_client_resolves(svc, host):
+    ident = _identity(roles=["broker-host"])
+    server = "host-1.local."
+    advertised = BrokerEndpoint.from_instance(
+        _inst(svc.service_type, server=server, port=svc.port, txt=svc.txt(ident, server))
+    )
+    ep = svc.endpoint(server, ident)
+    assert ep.host == advertised.host == host
+    assert (ep.service_type, ep.port, ep.txt) == (
+        advertised.service_type,
+        advertised.port,
+        advertised.txt,
+    )
+    assert ep.server == advertised.server == "host-1.local"
+    assert svc.endpoint(server).txt == {}
 
 
 # --- BrokerEndpoint ---------------------------------------------------------

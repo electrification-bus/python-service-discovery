@@ -16,7 +16,7 @@ from test_mdns import (  # noqa: E402
 )
 
 from ebus_service_discovery import mdns_async  # noqa: E402
-from ebus_service_discovery.ebus import HttpService, RetrySchedule  # noqa: E402
+from ebus_service_discovery.ebus import BrokerService, HttpService, RetrySchedule  # noqa: E402
 
 # --- mdns_async -------------------------------------------------------------------
 
@@ -51,6 +51,25 @@ def test_async_advertiser():
     assert not adv.running
     assert aiozc.zeroconf.registered == {}
     assert not aiozc.closed and not aiozc.zeroconf.closed
+
+
+@pytest.mark.usefixtures("os_name")
+def test_async_advertiser_brokers():
+    aiozc = FakeAsyncZeroconf()
+
+    async def run():
+        async with mdns_async.Advertiser(IDENT, aiozc, brokers=BrokerService()):
+            names = sorted(aiozc.zeroconf.registered)
+            info = aiozc.zeroconf.registered["dev-1._secure-mqtt._tcp.local."]
+            assert info.server == "host-1.local." and info.addresses == []
+        return names
+
+    assert asyncio.run(run()) == [
+        "dev-1._device-info._tcp.local.",
+        "dev-1._ebus._tcp.local.",
+        "dev-1._secure-mqtt._tcp.local.",
+    ]
+    assert aiozc.zeroconf.registered == {}
 
 
 async def _cancel_start_once(aiozc, registered_count):

@@ -27,6 +27,7 @@ from ebus_service_discovery import (  # noqa: E402
 )
 from ebus_service_discovery.ebus import (  # noqa: E402
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -588,6 +589,92 @@ def test_advertiser_registers_services_under_os_name(os_name):
     assert len(zc.unregistered) == 4
     assert not zc.closed  # a passed instance is never closed
     zc.close()
+
+
+BROKER_IDENT = Identity(
+    device_ids=["broker-1"],
+    roles=["broker-host"],
+    manufacturer="Example",
+    model="EX-1",
+    serial_number="sn-0002",
+)
+
+
+def test_advertiser_registers_broker_services(os_name):
+    zc = FakeZeroconf()
+    brokers = [BrokerService(), BrokerService("_mqtt._tcp"), BrokerService("_mqtt-ws._tcp")]
+    with mdns.Advertiser(BROKER_IDENT, zc=zc, brokers=brokers) as adv:
+        infos = {i.type: i for i in adv.infos}
+        assert set(infos) == {
+            "_ebus._tcp.local.",
+            "_device-info._tcp.local.",
+            "_secure-mqtt._tcp.local.",
+            "_mqtt._tcp.local.",
+            "_mqtt-ws._tcp.local.",
+        }
+        for info in infos.values():
+            assert info.name.startswith("broker-1.")  # one instance name for all
+            assert info.server == "host-1.local."
+            assert info.addresses == []  # never under the OS responder's name
+        assert infos["_secure-mqtt._tcp.local."].port == 8883
+        assert infos["_mqtt._tcp.local."].port == 1883
+        assert infos["_mqtt-ws._tcp.local."].port == 9001
+        assert _txt(infos["_secure-mqtt._tcp.local."]) == {
+            "txtvers": "1",
+            "protocol": "mqtt-v5",
+            "broker": "host-1.local",
+            "device_id": "broker-1",
+        }
+        assert _txt(infos["_mqtt-ws._tcp.local."])["path"] == "/mqtt"
+    assert len(zc.unregistered) == 5
+    zc.close()
+
+
+def test_advertised_broker_round_trips_through_find_broker(os_name, monkeypatch):
+    zc = FakeZeroconf()
+    svc = BrokerService(port=18883)
+    with mdns.Advertiser(BROKER_IDENT, zc=zc, brokers=svc) as adv:
+        found = [
+            _mdns_core.info_to_instance(i, "_secure-mqtt._tcp")
+            for i in adv.infos
+            if i.type == "_secure-mqtt._tcp.local."
+        ]
+        expected = svc.endpoint(adv.server, BROKER_IDENT)
+    zc.close()
+    _patch_browse(monkeypatch, mdns, [found])
+    ep = mdns.find_broker(
+        "discovery-with-fallback", "mqtts://host-1.local", zc=object(), schedule=FAST
+    )
+    assert (ep.service_type, ep.host, ep.port, ep.txt) == (
+        expected.service_type,
+        expected.host,
+        expected.port,
+        expected.txt,
+    )
+
+
+def test_advertiser_renames_broker_services_with_the_rest(os_name):
+    zc = FakeZeroconf(taken={"broker-1._secure-mqtt._tcp.local."})
+    with mdns.Advertiser(BROKER_IDENT, zc=zc, brokers=BrokerService()) as adv:
+        assert adv.instance_name == "broker-1-2"
+        assert sorted(zc.registered) == [
+            "broker-1-2._device-info._tcp.local.",
+            "broker-1-2._ebus._tcp.local.",
+            "broker-1-2._secure-mqtt._tcp.local.",
+        ]
+    zc.close()
+
+
+def test_advertiser_broker_validation_before_network(caplog):
+    with pytest.raises(ValueError, match="more than one BrokerService of type _mqtt._tcp"):
+        mdns.Advertiser(
+            BROKER_IDENT, brokers=[BrokerService("_mqtt._tcp"), BrokerService("_mqtt._tcp", port=2)]
+        )
+    with pytest.raises(ValueError, match="at most 255"):
+        mdns.Advertiser(BROKER_IDENT, brokers=BrokerService(extra_txt={"x": "y" * 300}))
+    with caplog.at_level(logging.WARNING):
+        mdns.Advertiser(IDENT, brokers=BrokerService())
+    assert "reason=brokersWithoutBrokerHostRole,roles=device" in caplog.text
 
 
 def test_advertiser_renames_on_conflict(os_name, caplog):
