@@ -11,6 +11,7 @@ from ebus_service_discovery.ebus import (
     BROKER_PREFERENCE,
     DEFAULT_BROKER_MODE,
     EBUS_SPEC_VERSION,
+    LOG_SERVICE,
     MQTT_SERVICE,
     MQTT_WS_SERVICE,
     MQTT_WSS_SERVICE,
@@ -27,6 +28,7 @@ from ebus_service_discovery.ebus import (
     decode_txt,
     match_configured,
     parse_ebus_txt,
+    parse_log_txt,
     rank_brokers,
     select_broker,
     txt_wire_size,
@@ -318,6 +320,45 @@ def test_identity_homie_fields_win_over_extra_ebus_txt():
 def test_identity_rejects_invalid_homie_domain(domain):
     with pytest.raises(ValueError, match="Homie domain"):
         _identity(homie_domain=domain)
+
+
+# _telnet._tcp log stream (#9), cpp-sdk v0.4.0 test_discovery_txt (txt_build_log).
+
+
+def test_identity_log_txt_matches_cpp_sdk_esp32():
+    assert LOG_SERVICE == "_telnet._tcp"
+    assert list(_esp32_identity().log_txt().items()) == [
+        ("txtvers", "1"),
+        ("device_id", "b0b21c90f570"),
+        ("kind", "serial-log"),
+    ]
+
+
+def test_identity_log_txt_ignores_extra_ebus_txt():
+    ident = _identity(device_ids=["a", "b"], extra_ebus_txt={"kind": "shell"})
+    assert ident.log_txt() == {"txtvers": "1", "device_id": "a,b", "kind": "serial-log"}
+
+
+def test_parse_log_txt():
+    # What an esp32-sdk device on the LAN advertises (dns-sd -L <id> _telnet._tcp).
+    parsed = parse_log_txt(
+        {b"kind": b"serial-log", b"device_id": b"78421c38d85c", b"txtvers": b"1"}
+    )
+    assert parsed.txtvers == "1"
+    assert parsed.device_ids == ("78421c38d85c",)
+    assert parsed.kind == "serial-log"
+    assert parsed.missing == ()
+    assert parsed.is_serial_log
+    assert parse_log_txt(_esp32_identity().log_txt()).is_serial_log
+
+
+def test_parse_log_txt_other_telnet_service():
+    parsed = parse_log_txt({})
+    assert parsed.missing == ("txtvers", "device_id", "kind")
+    assert not parsed.is_serial_log
+    assert not parse_log_txt({"kind": "serial-log"}).is_serial_log
+    assert not parse_log_txt({"device_id": "dev-1", "kind": "shell"}).is_serial_log
+    assert parse_log_txt({"KIND": "serial-log", "device_id": "d"}).get("Kind") == "serial-log"
 
 
 def test_identity_device_info_txt():

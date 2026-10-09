@@ -31,6 +31,7 @@ from ebus_service_discovery.ebus import (  # noqa: E402
     HttpService,
     Identity,
     RetrySchedule,
+    parse_log_txt,
 )
 
 IDENT = Identity(
@@ -637,6 +638,39 @@ def test_advertiser_registers_broker_services(os_name):
         assert _txt(infos["_mqtt-ws._tcp.local."])["path"] == "/mqtt"
     assert len(zc.unregistered) == 5
     zc.close()
+
+
+def test_advertiser_registers_log_service(os_name):
+    zc = FakeZeroconf()
+    with mdns.Advertiser(IDENT, zc=zc, log_port=23) as adv:
+        infos = {i.type: i for i in adv.infos}
+        assert set(infos) == {
+            "_ebus._tcp.local.",
+            "_device-info._tcp.local.",
+            "_telnet._tcp.local.",
+        }
+        log = infos["_telnet._tcp.local."]
+        assert log.name == "dev-1._telnet._tcp.local."
+        assert log.port == 23
+        assert log.server == "host-1.local." and log.addresses == []
+        assert _txt(log) == {"txtvers": "1", "device_id": "dev-1", "kind": "serial-log"}
+        assert parse_log_txt(_mdns_core.info_to_instance(log, "_telnet._tcp").txt).is_serial_log
+    assert len(zc.unregistered) == 3
+    zc.close()
+
+
+@pytest.mark.parametrize("log_port", [None, 0])
+def test_advertiser_log_service_is_opt_in(os_name, log_port):
+    zc = FakeZeroconf()
+    with mdns.Advertiser(IDENT, zc=zc, log_port=log_port) as adv:
+        assert "_telnet._tcp.local." not in {i.type for i in adv.infos}
+    zc.close()
+
+
+@pytest.mark.parametrize("log_port", [-1, 65536])
+def test_advertiser_rejects_invalid_log_port(log_port):
+    with pytest.raises(ValueError, match="log_port"):
+        mdns.Advertiser(IDENT, zc=object(), log_port=log_port)
 
 
 def test_advertised_broker_round_trips_through_find_broker(os_name, monkeypatch):

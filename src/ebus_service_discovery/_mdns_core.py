@@ -72,6 +72,7 @@ from ebus_service_discovery.ebus import (
     BROKER_PREFERENCE,
     DEVICE_INFO_SERVICE,
     EBUS_SERVICE,
+    LOG_SERVICE,
     ROLE_BROKER_HOST,
     SECURE_MQTT_SERVICE,
     TCP_BROKER_TYPES,
@@ -906,6 +907,7 @@ def build_infos(
     device_info_port: int,
     http: Sequence[HttpService],
     brokers: Sequence[BrokerService] = (),
+    log_port: int | None = None,
 ) -> list[ServiceInfo]:
     """The ``ServiceInfo`` objects one advertisement registers."""
     services: list[tuple[str, int, dict[str, str]]] = [
@@ -914,6 +916,8 @@ def build_infos(
     ]
     services += [(h.service_type, h.port, h.txt(identity)) for h in http]
     services += [(b.service_type, b.port or 0, b.txt(identity, server)) for b in brokers]
+    if log_port:
+        services.append((LOG_SERVICE, log_port, identity.log_txt()))
     infos = []
     for service_type, svc_port, txt in services:
         full = fq_type(service_type)
@@ -1016,8 +1020,12 @@ class AdvertisementPlan:
         instance_name: str | None,
         brokers: BrokerService | Sequence[BrokerService] | None = None,
         interfaces: str | Sequence[str] | None = None,
+        log_port: int | None = None,
     ):
         self.identity = identity
+        if log_port is not None and not 0 <= log_port <= 65535:
+            raise ValueError(f"invalid log_port {log_port!r}")
+        self.log_port = log_port
         if interfaces is not None:
             validate_interfaces(interfaces)  # before touching the network
         self.interfaces = interfaces
@@ -1154,6 +1162,7 @@ class AdvertisementPlan:
                 self.device_info_port,
                 self.http,
                 self.brokers,
+                self.log_port,
             )
 
         return build

@@ -70,6 +70,20 @@ def test_async_advertiser_brokers():
     assert aiozc.zeroconf.registered == {}
 
 
+@pytest.mark.usefixtures("os_name")
+def test_async_advertiser_log_service():
+    aiozc = FakeAsyncZeroconf()
+
+    async def run():
+        async with mdns_async.Advertiser(IDENT, aiozc, log_port=23):
+            info = aiozc.zeroconf.registered["dev-1._telnet._tcp.local."]
+            assert info.port == 23
+            return len(aiozc.zeroconf.registered)
+
+    assert asyncio.run(run()) == 3
+    assert aiozc.zeroconf.registered == {}
+
+
 async def _cancel_start_once(aiozc, registered_count):
     adv = mdns_async.Advertiser(IDENT, aiozc)
     task = asyncio.ensure_future(adv.start())

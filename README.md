@@ -67,6 +67,8 @@ for inst in mdns.browse("_ebus._tcp", timeout=3.0):
 
 `browse()` returns resolved `ServiceInstance`s: service type, instance name, SRV target (`server`), port, addresses, TXT (keys lowercased) and, for a scoped IPv6 answer, the interface. An IPv4-only answer carries no interface. `candidate_addresses()` leaves out an IPv6 link-local address that has neither a zone nor an interface to supply one, since it cannot be connected to. `Record.to_instance()` gives the same shape for a record from the bus.
 
+`parse_log_txt()` parses a `_telnet._tcp` record; other software advertises that type too, and `LogTxt.is_serial_log` is true only for an eBus log stream (`kind=serial-log` with a `device_id`).
+
 ### Find a broker
 
 ```python
@@ -120,6 +122,8 @@ with mdns.Advertiser(identity, http=HttpService(port=8080, openapi="/api/v1/open
 `Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`, and a broker service type for each `BrokerService`) under one instance name: `instance_name=` if given, else the first of `Identity.device_ids`, else (for a device id over 60 bytes) the host's label. If another advertiser already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
 
 `homie_domain=` on `Identity` (the first topic level the entity publishes under, such as `ebus`) adds `homie_domain`, `homie_version` (`homie_version=`, default `5`) and `homie_roles` (`roles` restricted to `device` and `controller`) to `_ebus._tcp`. These keys are proposed for framework.md in electrification-bus/specification#26. `extra_ebus_txt` adds keys the specification does not define; a key the identity already sets, these three included, keeps the identity's value.
+
+A process that serves a read-only diagnostic log stream over raw TCP advertises it with `log_port=`: `Advertiser(identity, log_port=23)` also registers `_telnet._tcp` (`LOG_SERVICE`) on that port, with TXT `txtvers=1`, `device_id` and `kind=serial-log` (`Identity.log_txt()`), the record cpp-sdk 0.4.0's `txt_build_log` and esp32-sdk emit. A monitor finds it with `dns-sd -B _telnet._tcp` or `avahi-browse -rt _telnet._tcp` and connects with `nc <host> <port>`. `log_port` of `None` (the default) or `0` advertises nothing. The service is proposed for framework.md in electrification-bus/specification#25.
 
 A host that runs an MQTT broker advertises it with `brokers=`, one `BrokerService` per transport its broker listens on. On a Linux broker host running avahi-daemon:
 

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `homie_domain` and `homie_version` on `ebus.Identity` (#8). With `homie_domain` set, the `_ebus._tcp` record ends with `homie_domain`, `homie_version` (default `5`) and `homie_roles`, the identity's `roles` restricted to `device` and `controller` (omitted when neither is present), the keys and order cpp-sdk 0.4.0's `txt_build_ebus` emits. Without `homie_domain` none is added and `extra_ebus_txt` can still carry them; when both set a key, the field wins. A domain containing `/`, `+` or `#` raises `ValueError`. Proposed for framework.md in electrification-bus/specification#26.
+- `log_port=` on `Advertiser` (sync and asyncio) registers `_telnet._tcp`, a read-only diagnostic log stream, on that port with TXT `txtvers`, `device_id` and `kind=serial-log`, as cpp-sdk 0.4.0's `txt_build_log` does (#9). `None` (the default) or `0` advertises nothing. For browsing, `ebus.LOG_SERVICE`, `parse_log_txt()` and `LogTxt`, whose `is_serial_log` tells an eBus log stream from another `_telnet._tcp` service. `Identity.log_txt()` returns the record. Proposed for framework.md in electrification-bus/specification#25.
 
 ## [0.5.0] - 2026-10-08
 
