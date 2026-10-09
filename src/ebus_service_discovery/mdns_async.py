@@ -161,6 +161,7 @@ class Advertiser:
         detect_timeout: float = 3.0,
         interfaces: str | Sequence[str] | None = None,
         interface_check_interval: float | None = DEFAULT_INTERFACE_CHECK_INTERVAL,
+        log_port: int | None = None,
     ):
         if aiozc is None and interfaces is None:
             interfaces = INTERFACES_ONE_PER_SUBNET
@@ -174,6 +175,7 @@ class Advertiser:
             instance_name=instance_name,
             brokers=brokers,
             interfaces=interfaces,
+            log_port=log_port,
         )
         self._aiozc = aiozc
         self._own: AsyncZeroconf | None = None

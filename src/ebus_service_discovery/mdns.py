@@ -3,8 +3,8 @@
 ``browse`` lists the instances of a service type, ``find_broker`` resolves the
 broker to connect to under the framework.md broker modes, and ``Advertiser``
 registers the ``_ebus._tcp`` / ``_device-info._tcp`` services (and
-``_http._tcp`` / ``_https._tcp`` when given) under the host's existing
-``.local`` name.
+``_http._tcp`` / ``_https._tcp``, broker types and ``_telnet._tcp`` when
+given) under the host's existing ``.local`` name.
 
 Each takes an optional ``zeroconf.Zeroconf``. When none is passed one is
 created for the call (or for the advertiser's lifetime) and closed afterwards;
@@ -278,6 +278,8 @@ class Advertiser:
 
     ``port`` is the ``_ebus._tcp`` SRV port (default: the first HTTP port, else
     0); ``device_info_port`` is the ``_device-info._tcp`` port (default 0).
+    ``log_port``, when set and not 0, also registers ``_telnet._tcp`` on that
+    port for a read-only diagnostic log stream (``Identity.log_txt()``).
 
     ``interfaces`` selects the interfaces of the ``Zeroconf`` created when no
     ``zc`` is passed (default ``"one-per-subnet"``), and with no OS responder
@@ -321,6 +323,7 @@ class Advertiser:
         detect_timeout: float = 3.0,
         interfaces: str | Sequence[str] | None = None,
         interface_check_interval: float | None = DEFAULT_INTERFACE_CHECK_INTERVAL,
+        log_port: int | None = None,
     ):
         if zc is None and interfaces is None:
             interfaces = INTERFACES_ONE_PER_SUBNET
@@ -334,6 +337,7 @@ class Advertiser:
             instance_name=instance_name,
             brokers=brokers,
             interfaces=interfaces,
+            log_port=log_port,
         )
         self._zc = zc
         self._own_zc: Zeroconf | None = None
