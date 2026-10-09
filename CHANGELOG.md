@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-08
+
 ### Fixed
 
 - `discovery-with-fallback` no longer connects to a different broker than the configured one (#4). `select_broker()` and `find_broker()` (sync and asyncio) accept only a discovered broker that matches the configured host by TXT `broker` name, SRV target or, for a host configured as an IP address, an advertised address; until one is heard within the fallback window they keep browsing, then return the configured broker. Previously the first ranked broker won whenever the configured one was not matched, and received the configured credentials. Behavior change: pass `allow_unmatched=True` to `select_broker()`, `find_broker()` or `BrokerSearch` for the 0.4.0 behavior. `discovery-only` and `configured-only` are unchanged. Every discovered broker not chosen is logged (`reason=brokerNotChosen`).
