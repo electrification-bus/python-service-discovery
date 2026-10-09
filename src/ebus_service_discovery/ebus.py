@@ -86,6 +86,10 @@ ROLE_DEVICE = "device"
 ROLE_CONTROLLER = "controller"
 ROLE_BROKER_HOST = "broker-host"
 KNOWN_ROLES: frozenset[str] = frozenset({ROLE_DEVICE, ROLE_CONTROLLER, ROLE_BROKER_HOST})
+#: The roles ``homie_roles`` carries: the Homie convention's two.
+HOMIE_ROLES: tuple[str, ...] = (ROLE_DEVICE, ROLE_CONTROLLER)
+#: The ``homie_version`` advertised when ``Identity.homie_version`` is not set.
+HOMIE_VERSION = "5"
 
 
 # --- broker mode -------------------------------------------------------------
@@ -284,8 +288,17 @@ class Identity:
     may list several devices; they are joined with commas into ``device_id``.
     ``roles`` and ``auth_methods`` are lists, joined the same way. Recommended
     keys left empty are omitted. ``extra_ebus_txt`` / ``extra_device_info_txt``
-    add keys the specification does not define. Construction validates the
-    required keys and the TXT sizes (see ``check_txt``).
+    add keys the specification does not define; a key the identity already
+    sets keeps the identity's value. Construction validates the required keys
+    and the TXT sizes (see ``check_txt``).
+
+    ``homie_domain`` (the first topic level the entity publishes under, such
+    as ``ebus`` or ``homie``) adds ``homie_domain``, ``homie_version``
+    (default ``HOMIE_VERSION``) and ``homie_roles`` (``roles`` restricted to
+    ``device`` and ``controller``, omitted when neither is present) to the
+    ``_ebus._tcp`` record, after the specification's keys. Without
+    ``homie_domain`` none of the three is added and ``homie_version`` is
+    ignored, so ``extra_ebus_txt`` may still carry them.
     """
 
     device_ids: Sequence[str] | str
@@ -303,6 +316,8 @@ class Identity:
     hw_version: str | None = None
     os_version: str | None = None
     mac: str | None = None
+    homie_domain: str | None = None
+    homie_version: str | None = None
     extra_ebus_txt: Mapping[str, str] = field(default_factory=dict)
     extra_device_info_txt: Mapping[str, str] = field(default_factory=dict)
 
@@ -322,6 +337,8 @@ class Identity:
                 raise ValueError(f"invalid role {role!r}")
             if role not in KNOWN_ROLES:
                 logger.warning("reason=unknownEbusRole,role=%s", role)
+        if self.homie_domain and any(c in self.homie_domain for c in "/+#"):
+            raise ValueError(f"invalid Homie domain {self.homie_domain!r} (one topic level)")
         for key in ("manufacturer", "model", "serial_number", "ebus_version"):
             if not getattr(self, key):
                 raise ValueError(f"Identity.{key} is required")
@@ -349,6 +366,10 @@ class Identity:
         _put(txt, "register", self.register)
         _put(txt, "broker_ca", self.broker_ca)
         _put(txt, "auth_methods", ",".join(self.auth_methods))
+        if self.homie_domain:
+            txt["homie_domain"] = self.homie_domain
+            txt["homie_version"] = self.homie_version or HOMIE_VERSION
+            _put(txt, "homie_roles", ",".join(r for r in self.roles if r in HOMIE_ROLES))
         for k, v in self.extra_ebus_txt.items():
             txt.setdefault(k, v)
         return txt

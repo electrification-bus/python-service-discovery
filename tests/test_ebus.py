@@ -232,6 +232,94 @@ def test_identity_ebus_txt_required_and_recommended():
     assert parse_ebus_txt(ident.ebus_txt()).missing == ()
 
 
+# Homie keys (#8). Each expected record repeats a case from cpp-sdk v0.4.0
+# test/test_discovery_txt (txt_build_ebus), in order.
+
+
+def _esp32_identity(**kw):
+    """cpp-sdk test_discovery_txt esp32_identity(): what esp32-sdk advertises."""
+    base = dict(
+        device_ids=["b0b21c90f570"],
+        roles=["device"],
+        manufacturer="NESL",
+        model="ESP32-POE-ISO",
+        serial_number="b0b21c90f570",
+        device_type="energy.ebus.device.meter",
+        name="Lab Meter",
+        fw_version="1.4.0",
+        register="/api/v1/auth/register",
+        auth_methods=["passphrase", "preconfigured"],
+        os_version="arduino-esp32 3.3.11 / ESP-IDF 5.5.5",
+        mac="b0b21c90f573",
+        homie_domain="ebus",
+        homie_version="5",
+    )
+    base.update(kw)
+    return Identity(**base)
+
+
+def test_identity_homie_keys_match_cpp_sdk_esp32():
+    assert list(_esp32_identity().ebus_txt().items()) == [
+        ("txtvers", "1"),
+        ("ebus_version", "0.9"),
+        ("roles", "device"),
+        ("device_id", "b0b21c90f570"),
+        ("device_type", "energy.ebus.device.meter"),
+        ("name", "Lab Meter"),
+        ("manufacturer", "NESL"),
+        ("model", "ESP32-POE-ISO"),
+        ("fw_version", "1.4.0"),
+        ("register", "/api/v1/auth/register"),
+        ("auth_methods", "passphrase,preconfigured"),
+        ("homie_domain", "ebus"),
+        ("homie_version", "5"),
+        ("homie_roles", "device"),
+    ]
+
+
+def test_identity_homie_roles_controller():
+    txt = _esp32_identity(roles=["controller"]).ebus_txt()
+    assert txt["roles"] == "controller"
+    assert txt["homie_roles"] == "controller"
+
+
+def test_identity_homie_roles_leave_out_broker_host():
+    txt = _identity(roles=["device", "broker-host"], homie_domain="homie").ebus_txt()
+    assert txt["roles"] == "device,broker-host"
+    assert txt["homie_domain"] == "homie"
+    assert txt["homie_version"] == "5"
+    assert txt["homie_roles"] == "device"
+
+    txt = _identity(roles=["broker-host"], homie_domain="homie").ebus_txt()
+    assert "homie_roles" not in txt
+    assert txt["homie_domain"] == "homie"
+
+
+def test_identity_homie_keys_need_a_domain():
+    assert not any(k.startswith("homie_") for k in _identity().ebus_txt())
+    txt = _identity(homie_domain="", homie_version="5").ebus_txt()
+    assert not any(k.startswith("homie_") for k in txt)
+
+
+def test_identity_homie_fields_win_over_extra_ebus_txt():
+    ident = _identity(
+        roles=["device", "controller"],
+        homie_domain="ebus",
+        extra_ebus_txt={"homie_domain": "homie", "homie_roles": "device", "mqtt_broker": "b"},
+    )
+    txt = ident.ebus_txt()
+    assert txt["homie_domain"] == "ebus"
+    assert txt["homie_roles"] == "device,controller"
+    assert txt["mqtt_broker"] == "b"
+    assert parse_ebus_txt(txt).get("HOMIE_DOMAIN") == "ebus"
+
+
+@pytest.mark.parametrize("domain", ["ebus/5", "+", "#"])
+def test_identity_rejects_invalid_homie_domain(domain):
+    with pytest.raises(ValueError, match="Homie domain"):
+        _identity(homie_domain=domain)
+
+
 def test_identity_device_info_txt():
     ident = _identity(fw_version="1.0", mac="a0b1c2d3e4f5", hw_version="")
     assert ident.device_info_txt() == {

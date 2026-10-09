@@ -119,6 +119,8 @@ with mdns.Advertiser(identity, http=HttpService(port=8080, openapi="/api/v1/open
 
 `Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`, and a broker service type for each `BrokerService`) under one instance name: `instance_name=` if given, else the first of `Identity.device_ids`, else (for a device id over 60 bytes) the host's label. If another advertiser already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
 
+`homie_domain=` on `Identity` (the first topic level the entity publishes under, such as `ebus`) adds `homie_domain`, `homie_version` (`homie_version=`, default `5`) and `homie_roles` (`roles` restricted to `device` and `controller`) to `_ebus._tcp`. These keys are proposed for framework.md in electrification-bus/specification#26. `extra_ebus_txt` adds keys the specification does not define; a key the identity already sets, these three included, keeps the identity's value.
+
 A host that runs an MQTT broker advertises it with `brokers=`, one `BrokerService` per transport its broker listens on. On a Linux broker host running avahi-daemon:
 
 ```python
