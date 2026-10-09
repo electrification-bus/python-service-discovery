@@ -363,10 +363,10 @@ class Identity:
     hw_version: str | None = None
     os_version: str | None = None
     mac: str | None = None
-    homie_domain: str | None = None
-    homie_version: str | None = None
     extra_ebus_txt: Mapping[str, str] = field(default_factory=dict)
     extra_device_info_txt: Mapping[str, str] = field(default_factory=dict)
+    homie_domain: str | None = None
+    homie_version: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "device_ids", _as_tuple(self.device_ids))
