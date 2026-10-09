@@ -104,11 +104,16 @@ def test_one_per_subnet_keeps_wifi_only_when_it_adds_a_subnet():
 
 
 def test_one_per_subnet_keeps_ipv6_only_adapter():
-    v6 = _adapter("tun0", "fe80::20/64", index=6)
+    v6 = _adapter("tun0", "2001:db8::20/64", "fe80::20/64", index=6)
     assert _names(_mdns_core.select_interfaces("one-per-subnet", [ETH, WLAN, v6])) == [
         "eth0",
         "tun0",
     ]
+
+
+def test_one_per_subnet_leaves_out_link_local_only_adapters():
+    veth = _adapter("veth1234", "fe80::99/64", index=9)
+    assert _names(_mdns_core.select_interfaces("one-per-subnet", [LO, ETH, veth])) == ["eth0"]
 
 
 def test_wireless_heuristic_reads_the_description():
@@ -271,7 +276,7 @@ def test_advertiser_invalid_interfaces_fail_before_network(adapters):
     with pytest.raises(ValueError, match="one-per-subnet"):
         mdns.Advertiser(IDENT, interfaces=["one-per-subnet", "eth0"])
     with pytest.raises(ValueError, match="no interface of wlan9 is up"):
-        mdns.Advertiser(IDENT, interfaces=["wlan9"]).start()
+        mdns.Advertiser(IDENT, interfaces=["wlan9"], interface_check_interval=None).start()
 
 
 def _no_os_responder(monkeypatch):
@@ -533,3 +538,140 @@ def test_async_advertiser_with_passed_aiozc_starts_no_task(os_name):  # noqa: F8
 
     asyncio.run(run())
     assert not aiozc.closed
+
+
+# --- what makes a move ------------------------------------------------------------
+
+ETH_V6 = _adapter("eth0", "192.0.2.10/24", "2001:db8::aaaa/64", "fe80::10/64", index=2)
+ETH_V6_ROTATED = _adapter("eth0", "192.0.2.10/24", "2001:db8::bbbb/64", "fe80::10/64", index=2)
+VETH = _adapter("veth1234", "fe80::99/64", index=9)
+
+
+@pytest.mark.usefixtures("os_name")
+def test_ipv6_churn_and_link_local_veths_do_not_move(adapters, factory):
+    adapters += [LO, ETH_V6]
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        adapters[1] = ETH_V6_ROTATED  # temporary address rotates
+        assert not adv.check_interfaces()
+        adapters.append(VETH)  # a container starts
+        assert not adv.check_interfaces()
+        adapters.pop()  # and stops
+        assert not adv.check_interfaces()
+        assert len(factory.created) == 1 and factory.created[0][1].unregistered == []
+    with mdns.Advertiser(IDENT, interfaces="all", interface_check_interval=None) as adv:
+        adapters.append(VETH)
+        assert not adv.check_interfaces()
+    assert len(factory.created) == 2
+
+
+def _count_detection(monkeypatch):
+    calls = []
+    for attr in ("async_os_hostname", "async_name_answered"):
+        inner = getattr(_mdns_core, attr)
+
+        async def counted(*args, _inner=inner, _attr=attr, **kw):
+            calls.append(_attr)
+            return await _inner(*args, **kw)
+
+        monkeypatch.setattr(_mdns_core, attr, counted)
+    return calls
+
+
+def test_address_change_without_os_responder_updates_in_place(adapters, factory, monkeypatch):
+    adapters += [LO, ETH_V6]
+    _no_os_responder(monkeypatch)
+    calls = _count_detection(monkeypatch)
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        zc = factory.created[0][1]
+        names = _registered_names(zc)
+        adapters[1] = ETH_V6_ROTATED
+        assert adv.check_interfaces()
+        assert len(factory.created) == 1 and zc.unregistered == []
+        assert sorted(zc.updated) == names
+        assert adv.infos[0].parsed_addresses() == ["192.0.2.10", "2001:db8::bbbb", "fe80::10"]
+        adapters.append(VETH)  # left out: neither a move nor new addresses
+        assert not adv.check_interfaces()
+    assert calls == ["async_os_hostname", "async_name_answered"]
+
+
+def test_move_reuses_the_host_name(adapters, factory, monkeypatch):
+    adapters += [LO, ETH, WLAN]
+    _no_os_responder(monkeypatch)
+    calls = _count_detection(monkeypatch)
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        adapters[1] = ETH_NO_ADDR
+        assert adv.check_interfaces()
+        assert adv.server == "plain-host.local."
+        assert adv.infos[0].parsed_addresses() == ["192.0.2.11", "fe80::11"]
+    assert calls == ["async_os_hostname", "async_name_answered"]
+
+
+@pytest.mark.usefixtures("os_name")
+def test_ranked_list_waits_for_an_interface_at_start(adapters, factory):
+    adapters += [LO]
+    adv = mdns.Advertiser(IDENT, interfaces=["eth0", "wlan0"], interface_check_interval=None)
+    with pytest.raises(ValueError, match="no interface of eth0, wlan0 is up"):
+        adv.start()
+    adv = mdns.Advertiser(IDENT, interfaces=["eth0", "wlan0"], interface_check_interval=0.01)
+    adv.start()
+    try:
+        assert not adv.running and factory.created == []
+        adapters.append(WLAN)
+        deadline = time.monotonic() + 5
+        while not adv.running and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert adv.running and factory.selections == [["wlan0"]]
+    finally:
+        adv.stop()
+    assert factory.created[0][1].closed
+
+
+def test_passed_zc_with_no_address_on_the_interfaces_raises(adapters, monkeypatch):
+    adapters += [LO, ETH_NO_ADDR, WLAN]
+    _no_os_responder(monkeypatch)
+    zc = FakeZeroconf()
+    try:
+        with pytest.raises(ValueError, match="no address to publish"):
+            mdns.Advertiser(IDENT, zc=zc, interfaces=["eth0"]).start()
+        with pytest.raises(ValueError, match="no interface named 'eth9'"):
+            mdns.Advertiser(IDENT, zc=zc, interfaces=["eth9"]).start()
+        assert zc.registered == {}
+    finally:
+        zc.close()
+
+
+def test_passed_zc_reads_a_list_as_resolve_interfaces_does(adapters, monkeypatch):
+    adapters += [LO, ETH, WLAN]
+    _no_os_responder(monkeypatch)
+    zc = FakeZeroconf()
+    with mdns.Advertiser(IDENT, zc=zc, interfaces=["eth0", "wlan0"]) as adv:
+        assert adv.infos[0].parsed_addresses() == [
+            "192.0.2.10",
+            "192.0.2.11",
+            "fe80::10",
+            "fe80::11",
+        ]
+    zc.close()
+
+
+def test_async_advertiser_waits_then_readdresses(adapters, async_factory, monkeypatch):
+    adapters += [LO]
+    _no_os_responder(monkeypatch)
+
+    async def run():
+        adv = mdns_async.Advertiser(IDENT, interfaces=["eth0"], interface_check_interval=None)
+        with pytest.raises(ValueError, match="no interface of eth0 is up"):
+            await adv.start()
+        adv._interval = 3600  # a watcher that never fires on its own
+        await adv.start()
+        assert not adv.running and async_factory == []
+        adapters.append(ETH_V6)
+        assert await adv.check_interfaces() and adv.running
+        adapters[1] = ETH_V6_ROTATED
+        assert await adv.check_interfaces()
+        addresses = adv.infos[0].parsed_addresses()
+        await adv.stop()
+        return addresses
+
+    assert asyncio.run(run()) == ["192.0.2.10", "2001:db8::bbbb", "fe80::10"]
+    assert len(async_factory) == 1 and async_factory[0].zeroconf.updated

@@ -284,17 +284,26 @@ class Advertiser:
     the addresses published for the fallback name come only from them. A list
     (``["eth0", "wlan0"]``) is a ranked candidate set: per IPv4 subnet, the
     first listed interface that is up and has an address is used (see
-    ``_mdns_core.advertise_selection``). With a passed ``zc`` it limits only
-    the published addresses (default: all of this host's).
+    ``_mdns_core.advertise_selection``). When none is up, ``start()`` returns
+    without advertising and the first check that finds one up starts the
+    advertisement (with ``interface_check_interval=None`` it raises
+    ``ValueError``). With a passed ``zc``, ``interfaces`` is read as
+    ``resolve_interfaces`` reads it and limits only the published addresses
+    (default: all of this host's); a selection with no address raises
+    ``ValueError``.
 
     An owned ``Zeroconf`` follows interface changes: every
     ``interface_check_interval`` seconds (None: never) a daemon thread compares
-    the interfaces and their addresses with the last check, and when the
-    selection changes it withdraws the services, replaces the ``Zeroconf``
-    with one on the new selection and registers them again. So with
-    ``eth0`` and ``wlan0`` on one subnet, Wi-Fi takes over while Ethernet is
-    down and Ethernet takes back when it returns. ``check_interfaces()``
-    runs a check at once. With a passed ``zc``, re-selection is the caller's.
+    the interfaces and their addresses with the last check. When the
+    ``Zeroconf`` would be built differently (other interfaces, or another IPv4
+    address) it withdraws the services, replaces the ``Zeroconf`` and
+    registers them again under the same host name, about 2 s in which
+    browsers see the services removed and added again. When only the
+    published fallback addresses change (IPv6 address rotation, for one) it
+    re-announces them in place. So with ``eth0`` and ``wlan0`` on one subnet,
+    Wi-Fi takes over while Ethernet is down and Ethernet takes back when it
+    returns. ``check_interfaces()`` runs a check at once. With a passed
+    ``zc``, re-selection is the caller's.
     """
 
     def __init__(
@@ -357,12 +366,16 @@ class Advertiser:
                 self._advertise(self._zc, core.FROM_PLAN)
                 return self
             selection = self._watch.initial()
-            self._own_zc = _zeroconf_on(selection)
-            try:
-                self._advertise(self._own_zc, selection)
-            except BaseException:
-                self._close_own()
-                raise
+            if selection == [] and self._interval is None:
+                raise self._watch.nothing_up()
+            self.server = None
+            if selection != []:  # else the first check that finds one up starts it
+                self._own_zc = _zeroconf_on(selection)
+                try:
+                    self._advertise(self._own_zc, selection)
+                except BaseException:
+                    self._close_own()
+                    raise
             self._active = True
             self._stopping.clear()
             if self._interval is not None:
@@ -372,10 +385,12 @@ class Advertiser:
                 self._watcher.start()
         return self
 
-    def _advertise(self, zc: Zeroconf, selection) -> None:
+    def _advertise(self, zc: Zeroconf, selection, server: str | None = None) -> None:
         self.server, self.instance_name, self._infos = _run(
-            zc, core.async_advertise(zc, self._plan, self._detect_timeout, selection)
+            zc, core.async_advertise(zc, self._plan, self._detect_timeout, selection, server)
         )
+        if self._watch is not None:
+            self._watch.track_addresses = self._plan.publishes_selection
 
     def check_interfaces(self) -> bool:
         """Check the interfaces now; True if the advertisement moved.
@@ -387,14 +402,29 @@ class Advertiser:
         with self._lock:
             if not self._active or self._stopping.is_set():
                 return False
-            move, selection = self._watch.check()
-            if not move:
+            change, selection = self._watch.check()
+            if change is None:
                 return False
+            if change == core.READDRESS:
+                zc = self._own_zc
+                try:
+                    self._infos = _run(
+                        zc,
+                        core.async_readdress(
+                            zc, self._plan, self.server, self.instance_name, selection
+                        ),
+                    )
+                except Exception:
+                    logger.warning("reason=advertiseReaddressFailed", exc_info=True)
+                    self._watch.failed()  # the next check moves
+                    return False
+                self._watch.moved()
+                return True
             self._withdraw()
             self._close_own()
             try:
                 self._own_zc = _zeroconf_on(selection)
-                self._advertise(self._own_zc, selection)
+                self._advertise(self._own_zc, selection, self.server)
             except Exception:
                 logger.warning("reason=advertiseMoveFailed", exc_info=True)
                 self._close_own()

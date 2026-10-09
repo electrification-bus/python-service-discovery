@@ -457,6 +457,7 @@ class FakeZeroconf:
         self.hold_broadcast = hold_broadcast  # announcements never finish
         self.registered: dict[str, ServiceInfo] = {}
         self.unregistered: list[str] = []
+        self.updated: list[str] = []
         self.sent = []
         self.closed = False
         self.cache = FakeCache()
@@ -477,6 +478,14 @@ class FakeZeroconf:
         fut = asyncio.get_running_loop().create_future()
         if not self.hold_broadcast:
             fut.set_result(None)
+        return fut
+
+    async def async_update_service(self, info):
+        assert info.name in self.registered
+        self.registered[info.name] = info
+        self.updated.append(info.name)
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(None)
         return fut
 
     async def async_unregister_service(self, info):

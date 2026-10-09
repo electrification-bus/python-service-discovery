@@ -136,8 +136,9 @@ class Advertiser:
     ``aiozc``, ``stop`` withdraws the services and leaves it open, and
     ``interfaces`` limits only the addresses published for the fallback name
     when there is no OS responder (default: all of this host's); pass the
-    value the ``AsyncZeroconf`` was built with (see ``resolve_interfaces``).
-    Re-selecting its interfaces is then the caller's job.
+    value the ``AsyncZeroconf`` was built with (see ``resolve_interfaces``),
+    which reads it the same way. Re-selecting its interfaces is then the
+    caller's job.
 
     With no ``aiozc``, the advertiser creates an ``AsyncZeroconf`` on
     ``interfaces`` (default ``"one-per-subnet"``), closes it on ``stop``, and
@@ -202,21 +203,27 @@ class Advertiser:
                 await self._advertise(self._aiozc, core.FROM_PLAN)
                 return self
             selection = self._watch.initial()
-            self._own = core.create_instance(AsyncZeroconf, selection)
-            try:
-                await self._advertise(self._own, selection)
-            except BaseException:
-                await self._close_own()
-                raise
+            if selection == [] and self._interval is None:
+                raise self._watch.nothing_up()
+            self.server = None
+            if selection != []:  # else the first check that finds one up starts it
+                self._own = core.create_instance(AsyncZeroconf, selection)
+                try:
+                    await self._advertise(self._own, selection)
+                except BaseException:
+                    await self._close_own()
+                    raise
             self._active = True
             if self._interval is not None:
                 self._watcher = asyncio.get_running_loop().create_task(self._watch_loop())
         return self
 
-    async def _advertise(self, aiozc: AsyncZeroconf, selection) -> None:
+    async def _advertise(self, aiozc: AsyncZeroconf, selection, server: str | None = None) -> None:
         self.server, self.instance_name, self._infos = await core.async_advertise(
-            aiozc.zeroconf, self._plan, self._detect_timeout, selection
+            aiozc.zeroconf, self._plan, self._detect_timeout, selection, server
         )
+        if self._watch is not None:
+            self._watch.track_addresses = self._plan.publishes_selection
 
     async def check_interfaces(self) -> bool:
         """Check the interfaces now; True if the advertisement moved.
@@ -228,14 +235,25 @@ class Advertiser:
         async with self._lock:
             if not self._active:
                 return False
-            move, selection = self._watch.check(await asyncio.to_thread(core.get_adapters))
-            if not move:
+            change, selection = self._watch.check(await asyncio.to_thread(core.get_adapters))
+            if change is None:
                 return False
+            if change == core.READDRESS:
+                try:
+                    self._infos = await core.async_readdress(
+                        self._own.zeroconf, self._plan, self.server, self.instance_name, selection
+                    )
+                except Exception:
+                    logger.warning("reason=advertiseReaddressFailed", exc_info=True)
+                    self._watch.failed()  # the next check moves
+                    return False
+                self._watch.moved()
+                return True
             await self._withdraw()
             await self._close_own()
             try:
                 self._own = core.create_instance(AsyncZeroconf, selection)
-                await self._advertise(self._own, selection)
+                await self._advertise(self._own, selection, self.server)
             except Exception:
                 logger.warning("reason=advertiseMoveFailed", exc_info=True)
                 await self._close_own()
