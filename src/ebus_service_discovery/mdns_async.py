@@ -2,7 +2,13 @@
 
 The same operations as ``mdns``, for hosts that own an event loop and a shared
 ``zeroconf.asyncio.AsyncZeroconf`` (Home Assistant, for one). Every function
-REQUIRES the caller's ``AsyncZeroconf`` and never creates or closes one.
+REQUIRES the caller's ``AsyncZeroconf`` and never creates or closes one. To
+select its interfaces as ``mdns`` does, build it with ``resolve_interfaces``::
+
+    version = default_ip_version()
+    aiozc = AsyncZeroconf(
+        interfaces=resolve_interfaces("one-per-subnet", version), ip_version=version
+    )
 """
 
 from __future__ import annotations
@@ -32,6 +38,11 @@ from ebus_service_discovery.ebus import (
 from ebus_service_discovery.instance import ServiceInstance
 
 DEFAULT_BROWSE_TIMEOUT = 3.0
+
+INTERFACES_ALL = core.INTERFACES_ALL
+INTERFACES_ONE_PER_SUBNET = core.INTERFACES_ONE_PER_SUBNET
+resolve_interfaces = core.resolve_interfaces
+default_ip_version = core.default_ip_version
 
 
 def _require(aiozc: AsyncZeroconf) -> None:
@@ -117,6 +128,10 @@ class Advertiser:
 
     ``await start()`` / ``await stop()``, or ``async with``. ``stop`` withdraws
     the services and leaves the ``AsyncZeroconf`` open.
+
+    ``interfaces`` limits the addresses published for the fallback name when
+    there is no OS responder (default: all of this host's); pass the value the
+    ``AsyncZeroconf`` was built with (see ``resolve_interfaces``).
     """
 
     def __init__(
@@ -132,6 +147,7 @@ class Advertiser:
         addresses: Sequence[str] | None = None,
         instance_name: str | None = None,
         detect_timeout: float = 3.0,
+        interfaces: str | Sequence[str] | None = None,
     ):
         _require(aiozc)
         self._plan = core.AdvertisementPlan(
@@ -143,6 +159,7 @@ class Advertiser:
             addresses=addresses,
             instance_name=instance_name,
             brokers=brokers,
+            interfaces=interfaces,
         )
         self._aiozc = aiozc
         self._detect_timeout = detect_timeout

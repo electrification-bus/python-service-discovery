@@ -153,6 +153,31 @@ On macOS a python-zeroconf instance created with `IPVersion.All` does not join t
 
 Every `mdns` call takes an optional `zc`. Without one, a `Zeroconf` is created for the call (or for the advertiser's lifetime) and closed afterwards; a passed instance is never closed. Call `mdns` from a thread other than the instance's own event loop.
 
+### Interfaces
+
+A `Zeroconf` this library creates uses the interfaces selected by `interfaces=`, accepted by `new_zeroconf()`, `browse()`, `browse_many()`, `find_broker()` and `Advertiser`:
+
+| Value | Interfaces |
+|---|---|
+| `"all"` | Every interface (python-zeroconf's default). The default for `new_zeroconf()`, `browse()`, `browse_many()` and `find_broker()`. |
+| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback is left out, and an interface with no IPv4 address is kept. The default for an `Advertiser` that creates its own instance. |
+| `["eth0"]`, `["192.0.2.7"]` | The named interfaces (all their addresses) and the given addresses. An unknown name or an address no interface holds raises `ValueError`. |
+
+This keeps a host with wired Ethernet and Wi-Fi on one subnet (a Raspberry Pi, for one) from advertising the same records on both links. An interface counts as Wi-Fi when its name starts with `wl` or `wifi` (`wlan0`, `wlp3s0`), its description says Wi-Fi, wireless or WLAN, or Linux lists `wireless` or `phy80211` under `/sys/class/net/<name>`; among equals the first interface wins. The heuristic does not recognize macOS names (`en0` can be Wi-Fi or wired), so pass names there when it matters.
+
+With no OS responder, `Advertiser` publishes only the selected interfaces' addresses for its fallback name. `interfaces=` together with a passed `zc` raises `ValueError` in `browse()`, `browse_many()` and `find_broker()`; on `Advertiser` it then limits only those published addresses. For an instance you build yourself, `resolve_interfaces()` (in `mdns` and `mdns_async`) turns the same values into the `interfaces` argument of `Zeroconf` or `AsyncZeroconf`:
+
+```python
+from zeroconf.asyncio import AsyncZeroconf
+from ebus_service_discovery import mdns_async
+
+version = mdns_async.default_ip_version()
+aiozc = AsyncZeroconf(
+    interfaces=mdns_async.resolve_interfaces("one-per-subnet", version), ip_version=version
+)
+advertiser = mdns_async.Advertiser(identity, aiozc, interfaces="one-per-subnet")
+```
+
 ### asyncio and Home Assistant
 
 `ebus_service_discovery.mdns_async` has the same operations as coroutines. Each requires the caller's `AsyncZeroconf` and never creates or closes it, which is what a Home Assistant integration must do with the shared instance:

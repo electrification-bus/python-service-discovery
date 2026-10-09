@@ -757,7 +757,7 @@ def test_advertiser_gives_up_after_99(os_name):
 def test_advertiser_owns_and_closes_its_zeroconf(os_name, monkeypatch):
     created = []
 
-    def factory():
+    def factory(interfaces):
         created.append(FakeZeroconf())
         return created[-1]
 
@@ -777,7 +777,9 @@ def test_advertiser_closes_owned_zeroconf_when_start_fails(monkeypatch):
     monkeypatch.setattr(_mdns_core, "async_os_hostname", none)
     monkeypatch.setattr(_mdns_core, "os_responder_present", lambda: True)
     created = []
-    monkeypatch.setattr(mdns, "new_zeroconf", lambda: created.append(FakeZeroconf()) or created[-1])
+    monkeypatch.setattr(
+        mdns, "new_zeroconf", lambda interfaces: created.append(FakeZeroconf()) or created[-1]
+    )
     with pytest.raises(RuntimeError, match="did not answer"):
         mdns.Advertiser(IDENT).start()
     assert created[0].closed

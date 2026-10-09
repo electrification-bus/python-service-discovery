@@ -58,6 +58,7 @@ from zeroconf import (
     DNSOutgoing,
     DNSPointer,
     DNSQuestion,
+    InterfaceChoice,
     IPVersion,
     NonUniqueNameException,
     ServiceInfo,
@@ -291,6 +292,239 @@ class BrokerSearch:
             logger.info("reason=brokerFallbackToConfigured,url=%s", self.configured.url)
             return True, self.configured
         return False, None
+
+
+# --- interface selection -----------------------------------------------------
+
+#: Every interface: python-zeroconf's ``InterfaceChoice.All``.
+INTERFACES_ALL = "all"
+#: One interface per IPv4 subnet, preferring wired over Wi-Fi.
+INTERFACES_ONE_PER_SUBNET = "one-per-subnet"
+INTERFACE_POLICIES = (INTERFACES_ALL, INTERFACES_ONE_PER_SUBNET)
+
+_WIRELESS_PREFIXES = ("wl", "wifi")
+_WIRELESS_WORDS = ("wi-fi", "wifi", "wireless", "wlan")
+
+
+def _ip_text(ip) -> str:
+    return ip.ip if isinstance(ip.ip, str) else ip.ip[0]
+
+
+def _parse_ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return None
+
+
+def _is_loopback_adapter(adapter) -> bool:
+    return any(_ip_text(ip) in ("127.0.0.1", "::1") for ip in adapter.ips)
+
+
+def is_wireless(adapter) -> bool:
+    """The Wi-Fi heuristic of ``"one-per-subnet"``.
+
+    True when the name starts with ``wl`` or ``wifi`` (``wlan0``, ``wlp3s0``),
+    the description says Wi-Fi, wireless or WLAN, or ``/sys/class/net/<name>``
+    has a ``wireless`` or ``phy80211`` entry. Anything else counts as wired.
+    """
+    name = (adapter.name or "").lower()
+    nice = (adapter.nice_name or "").lower()
+    if name.startswith(_WIRELESS_PREFIXES):
+        return True
+    if any(w in nice for w in _WIRELESS_WORDS):
+        return True
+    sysfs = f"/sys/class/net/{adapter.name}"
+    return os.path.exists(f"{sysfs}/wireless") or os.path.exists(f"{sysfs}/phy80211")
+
+
+class SelectedInterface:
+    """One selected adapter and the addresses selected on it."""
+
+    def __init__(self, name: str, index: int | None, ips: Sequence):
+        self.name = name
+        self.index = index
+        self.ips = list(ips)
+
+    def addresses(self) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+        out = []
+        for ip in self.ips:
+            addr = _parse_ip(_ip_text(ip))
+            if addr is not None:
+                out.append(addr)
+        return out
+
+    def __repr__(self) -> str:
+        return f"SelectedInterface({self.name!r}, {[str(a) for a in self.addresses()]})"
+
+
+def _ipv4_networks(adapter) -> set[ipaddress.IPv4Network]:
+    nets = set()
+    for ip in adapter.ips:
+        if isinstance(ip.ip, str):
+            try:
+                nets.add(ipaddress.ip_interface(f"{ip.ip}/{ip.network_prefix}").network)
+            except ValueError:
+                continue
+    return nets
+
+
+def _one_per_subnet(adapters: Sequence) -> list:
+    """Collapse adapters that share an IPv4 subnet to one, preferring wired.
+
+    Loopback adapters are left out. Wired adapters are considered before
+    Wi-Fi ones, each kind in ``adapters`` order; an adapter is kept when it
+    has an IPv4 subnet that no adapter kept before it has, or no IPv4 address
+    at all. Results are in ``adapters`` order.
+    """
+    candidates = [a for a in adapters if not _is_loopback_adapter(a) and a.ips]
+    order = sorted(range(len(candidates)), key=lambda i: (is_wireless(candidates[i]), i))
+    covered: dict[ipaddress.IPv4Network, str] = {}
+    keep = set()
+    for i in order:
+        adapter = candidates[i]
+        nets = _ipv4_networks(adapter)
+        if not nets or nets - covered.keys():
+            keep.add(i)
+            for net in nets:
+                covered.setdefault(net, adapter.name)
+        else:
+            logger.info(
+                "reason=interfaceSharesSubnet,kept=%s,dropped=%s",
+                ",".join(sorted({covered[n] for n in nets})),
+                adapter.name,
+            )
+    return [a for i, a in enumerate(candidates) if i in keep]
+
+
+def select_interfaces(
+    interfaces: str | Sequence[str], adapters: Sequence | None = None
+) -> list[SelectedInterface] | None:
+    """The adapters an ``interfaces=`` value selects; None for ``"all"``.
+
+    ``interfaces`` is ``"all"``, ``"one-per-subnet"``, or one or more interface
+    names (``eth0``; on Windows the adapter name or its description) and
+    addresses (``192.0.2.7``, ``fe80::1%eth0``). A name selects every address
+    of that adapter; an address selects only itself. An unknown name or an
+    address no adapter holds raises ``ValueError``. ``adapters`` defaults to
+    ``ifaddr.get_adapters()``.
+    """
+    if isinstance(interfaces, str):
+        if interfaces == INTERFACES_ALL:
+            return None
+        entries = [interfaces]
+    else:
+        entries = list(interfaces)
+        if not entries:
+            raise ValueError("interfaces= is empty")
+        if INTERFACES_ALL in entries:
+            if len(entries) > 1:
+                raise ValueError('"all" cannot be combined with other interfaces')
+            return None
+    if adapters is None:
+        import ifaddr  # a zeroconf dependency
+
+        adapters = ifaddr.get_adapters()
+    adapters = list(adapters)
+    if entries == [INTERFACES_ONE_PER_SUBNET]:
+        return [SelectedInterface(a.name, a.index, a.ips) for a in _one_per_subnet(adapters)]
+    if INTERFACES_ONE_PER_SUBNET in entries:
+        raise ValueError('"one-per-subnet" cannot be combined with other interfaces')
+    selected: dict[str, SelectedInterface] = {}
+
+    def add(adapter, ips) -> None:
+        entry = selected.setdefault(
+            adapter.name, SelectedInterface(adapter.name, adapter.index, [])
+        )
+        for ip in ips:
+            if ip not in entry.ips:
+                entry.ips.append(ip)
+
+    for entry in entries:
+        addr = _parse_ip(entry)
+        if addr is None:
+            matches = [a for a in adapters if entry in (a.name, a.nice_name)]
+            if not matches:
+                names = ", ".join(sorted({a.name for a in adapters}))
+                raise ValueError(f"no interface named {entry!r} (have: {names})")
+            for adapter in matches:
+                add(adapter, adapter.ips)
+            continue
+        held = [
+            (adapter, ip)
+            for adapter in adapters
+            for ip in adapter.ips
+            if _parse_ip(_ip_text(ip)) == addr
+        ]
+        if not held:
+            raise ValueError(f"no interface holds the address {entry}")
+        for adapter, ip in held:
+            add(adapter, [ip])
+    return list(selected.values())
+
+
+def zeroconf_interfaces(
+    selection: list[SelectedInterface] | None, ip_version: IPVersion
+) -> InterfaceChoice | list[str | int]:
+    """The ``Zeroconf(interfaces=...)`` value for a selection.
+
+    ``InterfaceChoice.All`` for None (``"all"``); otherwise the IPv4
+    addresses, plus the interface index of each adapter with an IPv6 address
+    when ``ip_version`` includes IPv6 (python-zeroconf joins IPv6 multicast by
+    index). Raises ``ValueError`` when nothing usable for ``ip_version`` is
+    selected.
+    """
+    if selection is None:
+        return InterfaceChoice.All
+    v4: list[str] = []
+    v6: list[int] = []
+    for sel in selection:
+        for ip in sel.ips:
+            if isinstance(ip.ip, str):
+                if ip_version is not IPVersion.V6Only and ip.ip not in v4:
+                    v4.append(ip.ip)
+            elif (
+                ip_version is not IPVersion.V4Only and sel.index is not None and sel.index not in v6
+            ):
+                v6.append(sel.index)
+    out: list[str | int] = [*v4, *v6]
+    if not out:
+        names = ",".join(s.name for s in selection) or "none"
+        raise ValueError(f"no {ip_version.name} address on the selected interfaces ({names})")
+    return out
+
+
+def resolve_interfaces(
+    interfaces: str | Sequence[str], ip_version: IPVersion | None = None
+) -> InterfaceChoice | list[str | int]:
+    """An ``interfaces=`` value as the ``interfaces`` argument of ``Zeroconf``.
+
+    ``ip_version`` defaults to ``default_ip_version()``; pass the same value
+    to ``Zeroconf`` / ``AsyncZeroconf``. ``"one-per-subnet"`` on a host with
+    no interface but loopback resolves to ``InterfaceChoice.All``.
+    """
+    version = ip_version if ip_version is not None else default_ip_version()
+    selection = select_interfaces(interfaces)
+    if selection == [] and interfaces == INTERFACES_ONE_PER_SUBNET:
+        logger.info("reason=noInterfaceSelected,fallback=all")
+        selection = None
+    return zeroconf_interfaces(selection, version)
+
+
+def selected_addresses(
+    interfaces: str | Sequence[str],
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """The addresses an ``interfaces=`` value selects, ordered as ``local_addresses``."""
+    selection = select_interfaces(interfaces)
+    if selection is None:
+        return local_addresses()
+    found: dict[str, ipaddress.IPv4Address | ipaddress.IPv6Address] = {}
+    for sel in selection:
+        for addr in sel.addresses():
+            if addr.is_loopback or addr.is_unspecified or addr.is_multicast:
+                continue
+            found[str(addr)] = addr
+    return sorted(found.values(), key=lambda a: (a.version, a.is_link_local))
 
 
 # --- the OS host name --------------------------------------------------------
@@ -533,8 +767,12 @@ class AdvertisementPlan:
         addresses: Sequence[str] | None,
         instance_name: str | None,
         brokers: BrokerService | Sequence[BrokerService] | None = None,
+        interfaces: str | Sequence[str] | None = None,
     ):
         self.identity = identity
+        if interfaces is not None:
+            select_interfaces(interfaces)  # validate before touching the network
+        self.interfaces = interfaces
         if http is None:
             self.http: tuple[HttpService, ...] = ()
         elif isinstance(http, HttpService):
@@ -574,7 +812,7 @@ class AdvertisementPlan:
         none: something else answers for the name). Otherwise the OS responder's
         name is used with no addresses, and ``addresses`` is ignored with a
         warning; with no OS responder, the fallback name with ``addresses``
-        (default: this host's own addresses).
+        (default: the addresses of ``interfaces``, else all of this host's).
         """
         if self.server:
             server = self.server if self.server.endswith(".") else self.server + "."
@@ -599,9 +837,12 @@ class AdvertisementPlan:
             raise RuntimeError(
                 f"another responder answers for {server}; pass server= and addresses="
             )
-        addrs = (
-            self.addresses if self.addresses is not None else [str(a) for a in local_addresses()]
-        )
+        if self.addresses is not None:
+            addrs = self.addresses
+        elif self.interfaces is not None:
+            addrs = [str(a) for a in selected_addresses(self.interfaces)]
+        else:
+            addrs = [str(a) for a in local_addresses()]
         logger.info(
             "reason=noOsResponder,server=%s,addresses=%s", server, ",".join(addrs) or "none"
         )
