@@ -89,7 +89,7 @@ client = MqttClient.from_config(endpoint.mqtt_cfg(base_cfg), client_id="example-
 
 | Mode | Behavior |
 |---|---|
-| `configured-only` | Returns the configured broker. Never browses. |
+| `configured-only` | Returns the configured broker. Never browses. The mode for a broker whose location is known, including a broker on the same host (`mqtt://localhost`). |
 | `discovery-only` (the default when the mode is `None`) | Browses until a broker is found, or until `stop` is set or the schedule's `max_attempts` runs out (then `None`). |
 | `discovery-with-fallback` | Browses for the configured broker; if the first three attempts (or all of them, when `max_attempts` is fewer) do not find it, returns the configured broker. Another discovered broker is never chosen in its place unless `allow_unmatched=True`. With no configured broker, behaves as `discovery-only`. |
 
