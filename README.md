@@ -160,7 +160,7 @@ A `Zeroconf` this library creates uses the interfaces selected by `interfaces=`,
 | Value | Interfaces |
 |---|---|
 | `"all"` | Every interface (python-zeroconf's default). The default for `new_zeroconf()`, `browse()`, `browse_many()` and `find_broker()`. |
-| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback is left out, and an interface with no IPv4 address is kept. The default for an `Advertiser` that creates its own instance. |
+| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback is left out, and an interface with no IPv4 address is kept. The default for an `Advertiser` that creates its own instance. Only the kept interface answers queries: if it loses its link or address, the host stops advertising until restarted, even when a dropped interface on the same subnet is still up. Use `"all"` on a host that relies on that failover. |
 | `["eth0"]`, `["192.0.2.7"]` | The named interfaces (all their addresses) and the given addresses. An unknown name or an address no interface holds raises `ValueError`. |
 
 This keeps a host with wired Ethernet and Wi-Fi on one subnet (a Raspberry Pi, for one) from advertising the same records on both links. An interface counts as Wi-Fi when its name starts with `wl` or `wifi` (`wlan0`, `wlp3s0`), its description says Wi-Fi, wireless or WLAN, or Linux lists `wireless` or `phy80211` under `/sys/class/net/<name>`; among equals the first interface wins. The heuristic does not recognize macOS names (`en0` can be Wi-Fi or wired), so pass names there when it matters.

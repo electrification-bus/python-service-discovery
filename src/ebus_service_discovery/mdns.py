@@ -288,7 +288,10 @@ class Advertiser:
     ``zc`` is passed (default ``"one-per-subnet"``; see ``new_zeroconf``), and
     with no OS responder the addresses published for the fallback name come
     only from them. With a passed ``zc`` it limits only those addresses
-    (default: all of this host's).
+    (default: all of this host's). Under ``"one-per-subnet"`` only the kept
+    interface answers: if it loses its link, advertising stops until restart
+    even when a dropped interface on the same subnet is up; pass ``"all"``
+    on a host that relies on that failover.
     """
 
     def __init__(
