@@ -647,7 +647,9 @@ def _find_configured(
         if want in (_norm_host(ep.host), _norm_host(ep.server)):
             return ep, ep
         if want_ip is not None and any(_ip(a.address) == want_ip for a in ep.addresses):
-            return ep, dataclasses.replace(ep, host=configured.host)
+            # A TLS client verifies the certificate against ``host``, which is
+            # issued for the discovered name, not the address.
+            return ep, ep if ep.use_tls else dataclasses.replace(ep, host=configured.host)
     return None
 
 
@@ -659,8 +661,10 @@ def match_configured(
     A discovered broker matches when the configured host equals its TXT
     ``broker`` name or SRV target (case-insensitive, trailing dot ignored) or,
     for a configured IP address, one of its advertised addresses. The first
-    match in ``ranked`` is returned with its discovered port and transport;
-    a match by address keeps the configured address as ``host``.
+    match in ``ranked`` is returned with its discovered port and transport.
+    A match by address keeps the configured address as ``host`` for a plain
+    transport; a TLS transport keeps the discovered name, which the broker's
+    certificate is issued for.
     """
     found = _find_configured(configured, ranked)
     return found[1] if found else None

@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import subprocess
 import sys
@@ -577,7 +578,7 @@ def test_select_discovery_with_fallback_without_configured_takes_first():
         ("mqtt://[fe80::20%25eth0]", "fe80::20%eth0"),
     ],
 )
-def test_match_configured_by_address_keeps_configured_host(url, advertised):
+def test_match_configured_by_address(url, advertised):
     conf = BrokerEndpoint.from_url(url)
     other = BrokerEndpoint(
         SECURE_MQTT_SERVICE, "a.local", 8883, addresses=(Address.parse("192.0.2.10"),)
@@ -589,9 +590,29 @@ def test_match_configured_by_address_keeps_configured_host(url, advertised):
         addresses=(Address.parse("192.0.2.99"), Address.parse(advertised)),
     )
     chosen = select_broker("discovery-with-fallback", conf, [other, b])
-    assert (chosen.host, chosen.port, chosen.use_tls) == (conf.host, 18883, True)
-    assert chosen.addresses == b.addresses
+    assert chosen is b  # TLS: the certificate is issued for the discovered name
     assert match_configured(conf, [other]) is None
+    plain = dataclasses.replace(b, service_type=MQTT_SERVICE, port=11883)
+    chosen = select_broker("discovery-with-fallback", conf, [plain])
+    assert (chosen.host, chosen.port, chosen.use_tls) == (conf.host, 11883, False)
+    assert chosen.addresses == b.addresses
+
+
+def test_address_match_on_tls_verifies_against_broker_name():
+    base = {"host": "192.0.2.10", "port": 1883, "tls_ca_cert": "/ca.pem", "tls_insecure": False}
+    conf = BrokerEndpoint.from_mqtt_cfg(base)
+    b = BrokerEndpoint(
+        SECURE_MQTT_SERVICE,
+        "broker-a.local",
+        8883,
+        txt={"broker": "broker-a.local"},
+        addresses=(Address.parse("192.0.2.10"),),
+        server="host-a.local",
+    )
+    cfg = select_broker("discovery-with-fallback", conf, [b]).mqtt_cfg(base)
+    assert (cfg["host"], cfg["port"], cfg["use_tls"]) == ("broker-a.local", 8883, True)
+    tls_conf = BrokerEndpoint.from_url("mqtts://192.0.2.10")
+    assert match_configured(tls_conf, [b]).host == "broker-a.local"
 
 
 def test_match_configured_by_name_ignores_addresses():

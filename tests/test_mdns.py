@@ -289,7 +289,7 @@ def test_search_fallback_takes_configured_when_it_appears():
     assert s.decide([other], 0) == (False, None)
     conf = _broker("_secure-mqtt._tcp", server="conf.local", port=18883)  # at 192.0.2.10
     done, ep = s.decide([other, conf], 1)
-    assert done and (ep.host, ep.port, ep.server) == ("192.0.2.10", 18883, "conf.local")
+    assert done and (ep.host, ep.port, ep.server) == ("conf.local", 18883, "conf.local")
 
 
 def test_search_fallback_allow_unmatched_takes_other():
