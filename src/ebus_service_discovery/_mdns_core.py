@@ -304,6 +304,8 @@ INTERFACE_POLICIES = (INTERFACES_ALL, INTERFACES_ONE_PER_SUBNET)
 
 _WIRELESS_PREFIXES = ("wl", "wifi")
 _WIRELESS_WORDS = ("wi-fi", "wifi", "wireless", "wlan")
+#: Where Linux lists network interfaces.
+SYSFS_NET = "/sys/class/net"
 
 
 def _ip_text(ip) -> str:
@@ -334,8 +336,27 @@ def is_wireless(adapter) -> bool:
         return True
     if any(w in nice for w in _WIRELESS_WORDS):
         return True
-    sysfs = f"/sys/class/net/{adapter.name}"
+    sysfs = f"{SYSFS_NET}/{adapter.name}"
     return os.path.exists(f"{sysfs}/wireless") or os.path.exists(f"{sysfs}/phy80211")
+
+
+#: Linux ``operstate`` values of an interface that cannot carry traffic.
+_NOT_UP_OPERSTATES = ("down", "lowerlayerdown", "dormant", "notpresent")
+
+
+def is_up(adapter) -> bool:
+    """True when the adapter has an address and, where Linux reports
+    ``/sys/class/net/<name>/operstate``, that state is not down. Elsewhere an
+    address is all that is checked.
+    """
+    if not adapter.ips:
+        return False
+    try:
+        with open(f"{SYSFS_NET}/{adapter.name}/operstate") as f:
+            state = f.read().strip()
+    except OSError:
+        return True
+    return state not in _NOT_UP_OPERSTATES
 
 
 class SelectedInterface:
@@ -358,9 +379,9 @@ class SelectedInterface:
         return f"SelectedInterface({self.name!r}, {[str(a) for a in self.addresses()]})"
 
 
-def _ipv4_networks(adapter) -> set[ipaddress.IPv4Network]:
+def _ipv4_networks(ips: Sequence) -> set[ipaddress.IPv4Network]:
     nets = set()
-    for ip in adapter.ips:
+    for ip in ips:
         if isinstance(ip.ip, str):
             try:
                 nets.add(ipaddress.ip_interface(f"{ip.ip}/{ip.network_prefix}").network)
@@ -369,32 +390,93 @@ def _ipv4_networks(adapter) -> set[ipaddress.IPv4Network]:
     return nets
 
 
-def _one_per_subnet(adapters: Sequence) -> list:
-    """Collapse adapters that share an IPv4 subnet to one, preferring wired.
-
-    Loopback adapters are left out. Wired adapters are considered before
-    Wi-Fi ones, each kind in ``adapters`` order; an adapter is kept when it
-    has an IPv4 subnet that no adapter kept before it has, or no IPv4 address
-    at all. Results are in ``adapters`` order.
-    """
-    candidates = [a for a in adapters if not _is_loopback_adapter(a) and a.ips]
-    order = sorted(range(len(candidates)), key=lambda i: (is_wireless(candidates[i]), i))
+def _per_subnet(candidates: Sequence[SelectedInterface]) -> list[SelectedInterface]:
+    """Keep, in order, each candidate with an IPv4 subnet that no candidate
+    kept before it has, or with no IPv4 address at all."""
     covered: dict[ipaddress.IPv4Network, str] = {}
-    keep = set()
-    for i in order:
-        adapter = candidates[i]
-        nets = _ipv4_networks(adapter)
+    kept = []
+    for cand in candidates:
+        nets = _ipv4_networks(cand.ips)
         if not nets or nets - covered.keys():
-            keep.add(i)
+            kept.append(cand)
             for net in nets:
-                covered.setdefault(net, adapter.name)
+                covered.setdefault(net, cand.name)
         else:
             logger.info(
                 "reason=interfaceSharesSubnet,kept=%s,dropped=%s",
                 ",".join(sorted({covered[n] for n in nets})),
-                adapter.name,
+                cand.name,
             )
+    return kept
+
+
+def _one_per_subnet(adapters: Sequence) -> list:
+    """Collapse adapters that share an IPv4 subnet to one, preferring wired.
+
+    Loopback adapters and adapters that are not up (``is_up``) are left out.
+    Wired adapters are considered before Wi-Fi ones, each kind in
+    ``adapters`` order; an adapter is kept when it has an IPv4 subnet that no
+    adapter kept before it has, or no IPv4 address at all. Results are in
+    ``adapters`` order.
+    """
+    candidates = [a for a in adapters if not _is_loopback_adapter(a) and is_up(a)]
+    order = sorted(range(len(candidates)), key=lambda i: (is_wireless(candidates[i]), i))
+    kept = _per_subnet([SelectedInterface(candidates[i].name, i, candidates[i].ips) for i in order])
+    keep = {sel.index for sel in kept}
     return [a for i, a in enumerate(candidates) if i in keep]
+
+
+def _entries(interfaces: str | Sequence[str]) -> list[str] | None:
+    """The entries of an ``interfaces=`` value; None for ``"all"``."""
+    entries = [interfaces] if isinstance(interfaces, str) else list(interfaces)
+    if not entries:
+        raise ValueError("interfaces= is empty")
+    if INTERFACES_ALL in entries:
+        if len(entries) > 1:
+            raise ValueError('"all" cannot be combined with other interfaces')
+        return None
+    if INTERFACES_ONE_PER_SUBNET in entries and len(entries) > 1:
+        raise ValueError('"one-per-subnet" cannot be combined with other interfaces')
+    return entries
+
+
+def validate_interfaces(interfaces: str | Sequence[str]) -> None:
+    """Raise ``ValueError`` for an ``interfaces=`` value no host could satisfy."""
+    _entries(interfaces)
+
+
+def get_adapters(adapters: Sequence | None = None) -> list:
+    """``adapters``, else ``ifaddr.get_adapters()``."""
+    if adapters is None:
+        import ifaddr  # a zeroconf dependency
+
+        adapters = ifaddr.get_adapters()
+    return list(adapters)
+
+
+def _matches(entry: str, adapters: Sequence) -> list[tuple[object, list]]:
+    """The adapters an entry names, each with the addresses it selects."""
+    addr = _parse_ip(entry)
+    if addr is None:
+        return [(a, list(a.ips)) for a in adapters if entry in (a.name, a.nice_name)]
+    return [
+        (adapter, [ip])
+        for adapter in adapters
+        for ip in adapter.ips
+        if _parse_ip(_ip_text(ip)) == addr
+    ]
+
+
+def _merge(pairs: Iterable[tuple[object, list]]) -> list[SelectedInterface]:
+    selected: dict[str, SelectedInterface] = {}
+    for adapter, ips in pairs:
+        entry = selected.setdefault(
+            adapter.name, SelectedInterface(adapter.name, adapter.index, [])
+        )
+        for ip in ips:
+            if ip not in entry.ips:
+                entry.ips.append(ip)
+    return list(selected.values())
 
 
 def select_interfaces(
@@ -407,60 +489,50 @@ def select_interfaces(
     addresses (``192.0.2.7``, ``fe80::1%eth0``). A name selects every address
     of that adapter; an address selects only itself. An unknown name or an
     address no adapter holds raises ``ValueError``. ``adapters`` defaults to
-    ``ifaddr.get_adapters()``.
+    ``ifaddr.get_adapters()``. ``Advertiser`` reads a list differently; see
+    ``advertise_selection``.
     """
-    if isinstance(interfaces, str):
-        if interfaces == INTERFACES_ALL:
-            return None
-        entries = [interfaces]
-    else:
-        entries = list(interfaces)
-        if not entries:
-            raise ValueError("interfaces= is empty")
-        if INTERFACES_ALL in entries:
-            if len(entries) > 1:
-                raise ValueError('"all" cannot be combined with other interfaces')
-            return None
-    if adapters is None:
-        import ifaddr  # a zeroconf dependency
-
-        adapters = ifaddr.get_adapters()
-    adapters = list(adapters)
+    entries = _entries(interfaces)
+    if entries is None:
+        return None
+    adapters = get_adapters(adapters)
     if entries == [INTERFACES_ONE_PER_SUBNET]:
         return [SelectedInterface(a.name, a.index, a.ips) for a in _one_per_subnet(adapters)]
-    if INTERFACES_ONE_PER_SUBNET in entries:
-        raise ValueError('"one-per-subnet" cannot be combined with other interfaces')
-    selected: dict[str, SelectedInterface] = {}
-
-    def add(adapter, ips) -> None:
-        entry = selected.setdefault(
-            adapter.name, SelectedInterface(adapter.name, adapter.index, [])
-        )
-        for ip in ips:
-            if ip not in entry.ips:
-                entry.ips.append(ip)
-
+    pairs = []
     for entry in entries:
-        addr = _parse_ip(entry)
-        if addr is None:
-            matches = [a for a in adapters if entry in (a.name, a.nice_name)]
-            if not matches:
-                names = ", ".join(sorted({a.name for a in adapters}))
-                raise ValueError(f"no interface named {entry!r} (have: {names})")
-            for adapter in matches:
-                add(adapter, adapter.ips)
-            continue
-        held = [
-            (adapter, ip)
-            for adapter in adapters
-            for ip in adapter.ips
-            if _parse_ip(_ip_text(ip)) == addr
-        ]
-        if not held:
-            raise ValueError(f"no interface holds the address {entry}")
-        for adapter, ip in held:
-            add(adapter, [ip])
-    return list(selected.values())
+        found = _matches(entry, adapters)
+        if not found:
+            if _parse_ip(entry) is not None:
+                raise ValueError(f"no interface holds the address {entry}")
+            names = ", ".join(sorted({a.name for a in adapters}))
+            raise ValueError(f"no interface named {entry!r} (have: {names})")
+        pairs += found
+    return _merge(pairs)
+
+
+def advertise_selection(
+    interfaces: str | Sequence[str], adapters: Sequence | None = None
+) -> list[SelectedInterface] | None:
+    """The interfaces an ``Advertiser`` uses now; None for ``"all"``.
+
+    ``"one-per-subnet"`` is as in ``select_interfaces``. A list of names and
+    addresses is a ranked candidate set: candidates that are not up
+    (``is_up``) or not present are skipped, and of the rest sharing an IPv4
+    subnet the first listed is kept. Returns ``[]`` when nothing is selected.
+    """
+    entries = _entries(interfaces)
+    if entries is None:
+        return None
+    adapters = get_adapters(adapters)
+    if entries == [INTERFACES_ONE_PER_SUBNET]:
+        return select_interfaces(INTERFACES_ONE_PER_SUBNET, adapters)
+    pairs = [
+        (adapter, ips)
+        for entry in entries
+        for adapter, ips in _matches(entry, adapters)
+        if is_up(adapter)
+    ]
+    return _per_subnet(_merge(pairs))
 
 
 def zeroconf_interfaces(
@@ -504,18 +576,41 @@ def resolve_interfaces(
     no interface but loopback resolves to ``InterfaceChoice.All``.
     """
     version = ip_version if ip_version is not None else default_ip_version()
+    return zeroconf_interfaces(instance_selection(interfaces), version)
+
+
+def instance_selection(interfaces: str | Sequence[str]) -> list[SelectedInterface] | None:
+    """``select_interfaces``, with ``"one-per-subnet"`` on a host with no
+    interface but loopback falling back to ``"all"`` (None)."""
     selection = select_interfaces(interfaces)
     if selection == [] and interfaces == INTERFACES_ONE_PER_SUBNET:
         logger.info("reason=noInterfaceSelected,fallback=all")
         selection = None
-    return zeroconf_interfaces(selection, version)
+    return selection
 
 
-def selected_addresses(
-    interfaces: str | Sequence[str],
+def create_instance(factory: Callable, selection: list[SelectedInterface] | None):
+    """``factory(interfaces=..., ip_version=...)`` (``Zeroconf`` or
+    ``AsyncZeroconf``) on ``selection``, at ``default_ip_version()``; IPv4
+    only if IPv6 is unavailable."""
+    version = default_ip_version()
+    try:
+        return factory(interfaces=zeroconf_interfaces(selection, version), ip_version=version)
+    except OSError:
+        if version is IPVersion.V4Only:
+            raise
+        logger.info("reason=ipv6Unavailable,fallback=ipv4")
+        return factory(
+            interfaces=zeroconf_interfaces(selection, IPVersion.V4Only),
+            ip_version=IPVersion.V4Only,
+        )
+
+
+def addresses_of(
+    selection: list[SelectedInterface] | None,
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """The addresses an ``interfaces=`` value selects, ordered as ``local_addresses``."""
-    selection = select_interfaces(interfaces)
+    """The addresses of a selection (None: ``local_addresses()``), ordered as
+    ``local_addresses``."""
     if selection is None:
         return local_addresses()
     found: dict[str, ipaddress.IPv4Address | ipaddress.IPv6Address] = {}
@@ -525,6 +620,104 @@ def selected_addresses(
                 continue
             found[str(addr)] = addr
     return sorted(found.values(), key=lambda a: (a.version, a.is_link_local))
+
+
+# --- re-selecting the advertised interfaces ----------------------------------
+
+#: Default seconds between interface checks of an ``Advertiser`` that owns its instance.
+DEFAULT_INTERFACE_CHECK_INTERVAL = 5.0
+
+
+def interface_snapshot(adapters: Sequence) -> tuple:
+    """What the interface check compares: each adapter's name, ``is_up`` and addresses."""
+    return tuple(
+        (a.name, is_up(a), tuple(sorted(f"{_ip_text(ip)}/{ip.network_prefix}" for ip in a.ips)))
+        for a in adapters
+    )
+
+
+def _selection_key(selection: list[SelectedInterface] | None, adapters: Sequence) -> tuple:
+    if selection is None:  # "all": every interface that is up
+        selection = [
+            SelectedInterface(a.name, a.index, a.ips)
+            for a in adapters
+            if is_up(a) and not _is_loopback_adapter(a)
+        ]
+    return tuple((s.name, tuple(sorted(_ip_text(ip) for ip in s.ips))) for s in selection)
+
+
+def _describe(key: tuple) -> str:
+    return "+".join(name for name, _ in key) or "none"
+
+
+class InterfaceWatch:
+    """Which interfaces an ``Advertiser`` that owns its instance advertises on,
+    and when to move.
+
+    ``initial()`` selects the interfaces to start on. ``check()`` takes a new
+    ``ifaddr`` snapshot and, when it differs from the last one and the
+    selection it yields differs from the advertised one, returns
+    ``(True, selection)``; the caller then moves and reports ``moved()`` or
+    ``failed()`` (a failed move is retried on the next check). When no
+    interface is up the advertisement stays where it is.
+    """
+
+    def __init__(self, interfaces: str | Sequence[str]):
+        validate_interfaces(interfaces)
+        self.interfaces = interfaces
+        self._snapshot: tuple | None = None
+        self._key: tuple = ()
+        self._pending: tuple = ()
+
+    def initial(self, adapters: Sequence | None = None) -> list[SelectedInterface] | None:
+        """The selection to start on; raises ``ValueError`` when a list selects nothing."""
+        adapters = get_adapters(adapters)
+        selection = advertise_selection(self.interfaces, adapters)
+        entries = _entries(self.interfaces) or []
+        if entries != [INTERFACES_ONE_PER_SUBNET]:
+            missing = [e for e in entries if not _matches(e, adapters)]
+            if missing:
+                logger.warning("reason=interfaceNotFound,interfaces=%s", ",".join(missing))
+        if selection == []:
+            if entries != [INTERFACES_ONE_PER_SUBNET]:
+                raise ValueError(f"no interface of {', '.join(entries)} is up with an address")
+            logger.info("reason=noInterfaceSelected,fallback=all")
+            selection = None
+        self._snapshot = interface_snapshot(adapters)
+        self._key = _selection_key(selection, adapters)
+        return selection
+
+    def check(
+        self, adapters: Sequence | None = None
+    ) -> tuple[bool, list[SelectedInterface] | None]:
+        adapters = get_adapters(adapters)
+        snapshot = interface_snapshot(adapters)
+        if snapshot == self._snapshot:
+            return False, None
+        self._snapshot = snapshot
+        selection = advertise_selection(self.interfaces, adapters)
+        if selection == []:
+            if self._key:
+                logger.warning("reason=noInterfaceUp,advertised=%s", _describe(self._key))
+            self._key = ()  # whichever interface comes up next is a move
+            return False, None
+        key = _selection_key(selection, adapters)
+        if key == self._key:
+            return False, None
+        logger.info(
+            "reason=advertiseInterfacesChanged,old=%s,new=%s",
+            _describe(self._key),
+            _describe(key),
+        )
+        self._pending = key
+        return True, selection
+
+    def moved(self) -> None:
+        self._key = self._pending
+
+    def failed(self) -> None:
+        self._snapshot = None
+        self._key = ()
 
 
 # --- the OS host name --------------------------------------------------------
@@ -753,6 +946,10 @@ async def async_unregister(zc: Zeroconf, infos: Sequence[ServiceInfo]) -> None:
     )
 
 
+#: ``async_advertise``'s default: the selection follows ``AdvertisementPlan.interfaces``.
+FROM_PLAN = object()
+
+
 class AdvertisementPlan:
     """What ``Advertiser.start`` registers, resolved from its arguments."""
 
@@ -771,7 +968,7 @@ class AdvertisementPlan:
     ):
         self.identity = identity
         if interfaces is not None:
-            select_interfaces(interfaces)  # validate before touching the network
+            validate_interfaces(interfaces)  # before touching the network
         self.interfaces = interfaces
         if http is None:
             self.http: tuple[HttpService, ...] = ()
@@ -804,7 +1001,7 @@ class AdvertisementPlan:
             logger.warning("reason=brokersWithoutBrokerHostRole,roles=%s", ",".join(identity.roles))
 
     async def async_resolve_host(
-        self, zc: Zeroconf, detect_timeout: float
+        self, zc: Zeroconf, detect_timeout: float, selection=FROM_PLAN
     ) -> tuple[str, list[str]]:
         """The SRV target and the addresses to publish for it.
 
@@ -812,7 +1009,8 @@ class AdvertisementPlan:
         none: something else answers for the name). Otherwise the OS responder's
         name is used with no addresses, and ``addresses`` is ignored with a
         warning; with no OS responder, the fallback name with ``addresses``
-        (default: the addresses of ``interfaces``, else all of this host's).
+        (default: the addresses of ``selection``, else of ``interfaces``, else
+        all of this host's).
         """
         if self.server:
             server = self.server if self.server.endswith(".") else self.server + "."
@@ -839,10 +1037,12 @@ class AdvertisementPlan:
             )
         if self.addresses is not None:
             addrs = self.addresses
-        elif self.interfaces is not None:
-            addrs = [str(a) for a in selected_addresses(self.interfaces)]
         else:
-            addrs = [str(a) for a in local_addresses()]
+            if selection is FROM_PLAN:
+                selection = (
+                    advertise_selection(self.interfaces) if self.interfaces is not None else None
+                )
+            addrs = [str(a) for a in addresses_of(selection)]
         logger.info(
             "reason=noOsResponder,server=%s,addresses=%s", server, ",".join(addrs) or "none"
         )
@@ -883,10 +1083,14 @@ class AdvertisementPlan:
 
 
 async def async_advertise(
-    zc: Zeroconf, plan: AdvertisementPlan, detect_timeout: float
+    zc: Zeroconf, plan: AdvertisementPlan, detect_timeout: float, selection=FROM_PLAN
 ) -> tuple[str, str, list[ServiceInfo]]:
-    """Resolve the host name and register; returns ``(server, instance_name, infos)``."""
-    server, addresses = await plan.async_resolve_host(zc, detect_timeout)
+    """Resolve the host name and register; returns ``(server, instance_name, infos)``.
+
+    ``selection`` (an ``advertise_selection`` result) is the interfaces ``zc``
+    was created on; by default it is resolved from ``plan.interfaces``.
+    """
+    server, addresses = await plan.async_resolve_host(zc, detect_timeout, selection)
     try:
         name, infos = await async_register(
             zc, plan.builder(server, addresses), plan.base_instance_name(server)

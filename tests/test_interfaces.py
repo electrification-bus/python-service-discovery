@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 import pytest
 
@@ -44,6 +45,18 @@ def adapters(monkeypatch):
     current = []
     monkeypatch.setattr(ifaddr, "get_adapters", lambda: list(current))
     return current
+
+
+@pytest.fixture(autouse=True)
+def sysfs(tmp_path, monkeypatch):
+    """An empty /sys/class/net, so the host's own interfaces do not leak in."""
+    monkeypatch.setattr(_mdns_core, "SYSFS_NET", str(tmp_path))
+    return tmp_path
+
+
+def _operstate(sysfs, name, state):
+    (sysfs / name).mkdir(exist_ok=True)
+    (sysfs / name / "operstate").write_text(state + "\n")
 
 
 # --- one-per-subnet -----------------------------------------------------------
@@ -164,12 +177,10 @@ def test_resolve_one_per_subnet_with_only_loopback_is_all(adapters):
     assert _mdns_core.resolve_interfaces("one-per-subnet", IPVersion.V4Only) is InterfaceChoice.All
 
 
-def test_selected_addresses(adapters):
+def test_addresses_of_a_selection(adapters):
     adapters += [LO, ETH, WLAN]
-    assert [str(a) for a in _mdns_core.selected_addresses("one-per-subnet")] == [
-        "192.0.2.10",
-        "fe80::10",
-    ]
+    selection = _mdns_core.select_interfaces("one-per-subnet")
+    assert [str(a) for a in _mdns_core.addresses_of(selection)] == ["192.0.2.10", "fe80::10"]
 
 
 # --- library-created instances -------------------------------------------------
@@ -222,26 +233,45 @@ def test_browse_and_find_broker_default_to_all(monkeypatch):
     assert seen == ["all", ["eth0"], "one-per-subnet"]
 
 
+class Factory:
+    """Records the selection each owned instance is created on."""
+
+    def __init__(self):
+        self.created = []
+
+    def __call__(self, selection):
+        zc = FakeZeroconf()
+        self.created.append((None if selection is None else _names(selection), zc))
+        return zc
+
+    @property
+    def selections(self):
+        return [names for names, _ in self.created]
+
+
+@pytest.fixture
+def factory(monkeypatch):
+    f = Factory()
+    monkeypatch.setattr(mdns, "_zeroconf_on", f)
+    return f
+
+
 @pytest.mark.usefixtures("os_name")
-def test_advertiser_defaults_to_one_per_subnet(monkeypatch):
-    seen = []
-
-    def factory(interfaces):
-        seen.append(interfaces)
-        return FakeZeroconf()
-
-    monkeypatch.setattr(mdns, "new_zeroconf", factory)
+def test_advertiser_defaults_to_one_per_subnet(adapters, factory):
+    adapters += [LO, ETH, WLAN]
     with mdns.Advertiser(IDENT):
         pass
     with mdns.Advertiser(IDENT, interfaces="all"):
         pass
-    assert seen == ["one-per-subnet", "all"]
+    assert factory.selections == [["eth0"], None]
 
 
 def test_advertiser_invalid_interfaces_fail_before_network(adapters):
     adapters += [ETH]
-    with pytest.raises(ValueError, match="wlan9"):
-        mdns.Advertiser(IDENT, interfaces=["wlan9"])
+    with pytest.raises(ValueError, match="one-per-subnet"):
+        mdns.Advertiser(IDENT, interfaces=["one-per-subnet", "eth0"])
+    with pytest.raises(ValueError, match="no interface of wlan9 is up"):
+        mdns.Advertiser(IDENT, interfaces=["wlan9"]).start()
 
 
 def _no_os_responder(monkeypatch):
@@ -257,10 +287,9 @@ def _no_os_responder(monkeypatch):
     monkeypatch.setattr(_mdns_core, "fallback_hostname", lambda: "plain-host.local.")
 
 
-def test_fallback_addresses_come_from_the_selected_interfaces(adapters, monkeypatch):
+def test_fallback_addresses_come_from_the_selected_interfaces(adapters, factory, monkeypatch):
     adapters += [LO, ETH, WLAN]
     _no_os_responder(monkeypatch)
-    monkeypatch.setattr(mdns, "new_zeroconf", lambda interfaces: FakeZeroconf())
     with mdns.Advertiser(IDENT) as adv:
         assert adv.infos[0].parsed_addresses() == ["192.0.2.10", "fe80::10"]
     zc = FakeZeroconf()
@@ -284,3 +313,223 @@ def test_async_advertiser_interfaces_limit_fallback_addresses(adapters, monkeypa
             return adv.infos[0].parsed_addresses()
 
     assert asyncio.run(run()) == ["192.0.2.11", "fe80::11"]
+
+
+# --- ranked candidates and up state --------------------------------------------
+
+
+def test_ranked_list_keeps_the_first_up_candidate_per_subnet(sysfs):
+    assert _names(_mdns_core.advertise_selection(["eth0", "wlan0"], [ETH, WLAN])) == ["eth0"]
+    assert _names(_mdns_core.advertise_selection(["wlan0", "eth0"], [ETH, WLAN])) == ["wlan0"]
+    other = [ETH, WLAN_OTHER]
+    assert _names(_mdns_core.advertise_selection(["wlan0", "eth0"], other)) == ["wlan0", "eth0"]
+    _operstate(sysfs, "eth0", "down")
+    assert _names(_mdns_core.advertise_selection(["eth0", "wlan0"], [ETH, WLAN])) == ["wlan0"]
+    assert _names(_mdns_core.advertise_selection(["eth0", "wlan9"], [ETH, WLAN])) == []
+
+
+def test_one_per_subnet_skips_an_interface_that_is_down(sysfs):
+    _operstate(sysfs, "eth0", "down")
+    assert _names(_mdns_core.select_interfaces("one-per-subnet", [LO, ETH, WLAN])) == ["wlan0"]
+    _operstate(sysfs, "eth0", "up")
+    assert _names(_mdns_core.select_interfaces("one-per-subnet", [LO, ETH, WLAN])) == ["eth0"]
+
+
+def test_is_up():
+    assert _mdns_core.is_up(ETH)  # no operstate (macOS): an address is enough
+    assert not _mdns_core.is_up(_adapter("eth1"))
+
+
+# --- re-selection when interfaces change ---------------------------------------
+
+ETH_NO_ADDR = _adapter("eth0", index=2)
+
+
+def _registered_names(zc):
+    return sorted(zc.registered)
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_moves_to_wifi_and_back(adapters, factory, caplog):
+    adapters += [LO, ETH, WLAN]
+    adv = mdns.Advertiser(IDENT, interface_check_interval=None).start()
+    first = factory.created[0][1]
+    names = _registered_names(first)
+    assert factory.selections == [["eth0"]] and names
+
+    assert not adv.check_interfaces()  # unchanged: nothing re-registered
+    assert len(factory.created) == 1 and first.unregistered == []
+
+    adapters[1] = ETH_NO_ADDR  # Ethernet loses its address
+    with caplog.at_level(logging.INFO, logger="ebus_service_discovery.mdns"):
+        assert adv.check_interfaces()
+    assert "reason=advertiseInterfacesChanged,old=eth0,new=wlan0" in caplog.text
+    assert first.closed and sorted(first.unregistered) == names
+    second = factory.created[1][1]
+    assert factory.selections[1] == ["wlan0"] and _registered_names(second) == names
+
+    adapters[1] = ETH  # Ethernet is back
+    assert adv.check_interfaces()
+    assert factory.selections[2] == ["eth0"] and second.closed
+    assert _registered_names(factory.created[2][1]) == names
+    adv.stop()
+    assert factory.created[2][1].closed
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_moves_when_operstate_goes_down(adapters, factory, sysfs):
+    adapters += [LO, ETH, WLAN]
+    _operstate(sysfs, "eth0", "up")
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        _operstate(sysfs, "eth0", "down")  # cable out, static address kept
+        assert adv.check_interfaces()
+        assert factory.selections == [["eth0"], ["wlan0"]]
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_honors_a_ranked_list(adapters, factory):
+    adapters += [LO, ETH, WLAN]
+    with mdns.Advertiser(IDENT, interfaces=["wlan0", "eth0"], interface_check_interval=None) as adv:
+        adapters[2] = _adapter("wlan0", index=3)  # Wi-Fi drops
+        assert adv.check_interfaces()
+        adapters[2] = WLAN
+        assert adv.check_interfaces()
+    assert factory.selections == [["wlan0"], ["eth0"], ["wlan0"]]
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_stays_put_while_nothing_is_up(adapters, factory):
+    adapters += [LO, ETH]
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        adapters[1] = ETH_NO_ADDR
+        assert not adv.check_interfaces()
+        assert adv.running and len(factory.created) == 1
+        adapters[1] = ETH  # the same interface returns: announce afresh
+        assert adv.check_interfaces()
+    assert factory.selections == [["eth0"], ["eth0"]]
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_retries_a_failed_move(adapters, factory, monkeypatch):
+    adapters += [LO, ETH, WLAN]
+    with mdns.Advertiser(IDENT, interface_check_interval=None) as adv:
+        adapters[1] = ETH_NO_ADDR
+
+        def boom(selection):
+            raise OSError("bind failed")
+
+        monkeypatch.setattr(mdns, "_zeroconf_on", boom)
+        assert not adv.check_interfaces() and not adv.running
+        monkeypatch.setattr(mdns, "_zeroconf_on", factory)
+        assert adv.check_interfaces() and adv.running
+    assert factory.selections == [["eth0"], ["wlan0"]]
+
+
+def test_advertiser_with_passed_zc_does_not_reselect(adapters, os_name):  # noqa: F811
+    adapters += [LO, ETH, WLAN]
+    zc = FakeZeroconf()
+    with mdns.Advertiser(IDENT, zc=zc) as adv:
+        adapters[1] = ETH_NO_ADDR
+        assert not adv.check_interfaces()
+        assert adv._watcher is None
+    zc.close()
+
+
+@pytest.mark.usefixtures("os_name")
+def test_advertiser_watcher_thread_moves_and_stops(adapters, factory):
+    adapters += [LO, ETH, WLAN]
+    adv = mdns.Advertiser(IDENT, interface_check_interval=0.01).start()
+    watcher = adv._watcher
+    assert watcher.is_alive() and watcher.daemon
+    adapters[1] = ETH_NO_ADDR
+    deadline = time.monotonic() + 5
+    while len(factory.created) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert factory.selections[:2] == [["eth0"], ["wlan0"]]
+    adv.stop()
+    assert not watcher.is_alive() and adv._watcher is None
+    assert all(zc.closed for _, zc in factory.created)
+
+
+class OwnedAsyncZeroconf:
+    """An ``AsyncZeroconf`` the async advertiser creates, on the running loop."""
+
+    def __init__(self, selections, interfaces, ip_version):
+        self.zeroconf = FakeZeroconf(start_loop=False)
+        self.interfaces = interfaces
+        self.closed = False
+        selections.append(self)
+
+    async def async_close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def async_factory(monkeypatch):
+    created = []
+    monkeypatch.setattr(_mdns_core, "default_ip_version", lambda: IPVersion.V4Only)
+    monkeypatch.setattr(
+        mdns_async,
+        "AsyncZeroconf",
+        lambda interfaces, ip_version: OwnedAsyncZeroconf(created, interfaces, ip_version),
+    )
+    return created
+
+
+@pytest.mark.usefixtures("os_name")
+def test_async_advertiser_owns_moves_and_stops(adapters, async_factory, caplog):
+    adapters += [LO, ETH, WLAN]
+
+    async def run():
+        adv = mdns_async.Advertiser(IDENT, interface_check_interval=None)
+        await adv.start()
+        assert not await adv.check_interfaces()
+        adapters[1] = ETH_NO_ADDR
+        assert await adv.check_interfaces()
+        adapters[1] = ETH
+        assert await adv.check_interfaces()
+        await adv.stop()
+        return adv
+
+    with caplog.at_level(logging.INFO, logger="ebus_service_discovery.mdns"):
+        adv = asyncio.run(run())
+    assert [z.interfaces for z in async_factory] == [
+        ["192.0.2.10"],
+        ["192.0.2.11"],
+        ["192.0.2.10"],
+    ]
+    assert all(z.closed for z in async_factory) and not adv.running
+    assert async_factory[0].zeroconf.unregistered and async_factory[2].zeroconf.registered == {}
+    assert "reason=advertiseInterfacesChanged,old=wlan0,new=eth0" in caplog.text
+
+
+@pytest.mark.usefixtures("os_name")
+def test_async_advertiser_watcher_task_moves_and_is_cancelled(adapters, async_factory):
+    adapters += [LO, ETH, WLAN]
+
+    async def run():
+        adv = mdns_async.Advertiser(IDENT, interface_check_interval=0.01)
+        await adv.start()
+        task = adv._watcher
+        adapters[1] = ETH_NO_ADDR
+        for _ in range(500):
+            if len(async_factory) > 1:
+                break
+            await asyncio.sleep(0.01)
+        await adv.stop()
+        return task, adv
+
+    task, adv = asyncio.run(run())
+    assert len(async_factory) == 2 and task.cancelled() and adv._watcher is None
+    assert all(z.closed for z in async_factory)
+
+
+def test_async_advertiser_with_passed_aiozc_starts_no_task(os_name):  # noqa: F811
+    aiozc = FakeAsyncZeroconf()
+
+    async def run():
+        async with mdns_async.Advertiser(IDENT, aiozc) as adv:
+            assert adv._watcher is None and not await adv.check_interfaces()
+
+    asyncio.run(run())
+    assert not aiozc.closed

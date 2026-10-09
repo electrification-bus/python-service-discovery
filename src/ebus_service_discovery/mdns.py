@@ -25,7 +25,7 @@ import threading
 from collections.abc import Iterator, Mapping, Sequence
 
 try:
-    from zeroconf import IPVersion, ServiceInfo, Zeroconf
+    from zeroconf import ServiceInfo, Zeroconf
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         'ebus_service_discovery.mdns needs zeroconf: pip install "ebus-service-discovery[zeroconf]"'
@@ -48,6 +48,7 @@ DEFAULT_BROWSE_TIMEOUT = 3.0
 
 INTERFACES_ALL = core.INTERFACES_ALL
 INTERFACES_ONE_PER_SUBNET = core.INTERFACES_ONE_PER_SUBNET
+DEFAULT_INTERFACE_CHECK_INTERVAL = core.DEFAULT_INTERFACE_CHECK_INTERVAL
 resolve_interfaces = core.resolve_interfaces
 
 
@@ -60,17 +61,11 @@ def new_zeroconf(interfaces: str | Sequence[str] = INTERFACES_ALL) -> Zeroconf:
     Wi-Fi; loopback left out), or interface names and addresses
     (``["eth0"]``, ``["192.0.2.7"]``). See ``resolve_interfaces``.
     """
-    version = core.default_ip_version()
-    try:
-        return Zeroconf(interfaces=core.resolve_interfaces(interfaces, version), ip_version=version)
-    except OSError:
-        if version is IPVersion.V4Only:
-            raise
-        logger.info("reason=ipv6Unavailable,fallback=ipv4")
-        return Zeroconf(
-            interfaces=core.resolve_interfaces(interfaces, IPVersion.V4Only),
-            ip_version=IPVersion.V4Only,
-        )
+    return _zeroconf_on(core.instance_selection(interfaces))
+
+
+def _zeroconf_on(selection: list[core.SelectedInterface] | None) -> Zeroconf:
+    return core.create_instance(Zeroconf, selection)
 
 
 def _check_interfaces(zc: Zeroconf | None, interfaces: str | Sequence[str] | None) -> None:
@@ -285,13 +280,21 @@ class Advertiser:
     0); ``device_info_port`` is the ``_device-info._tcp`` port (default 0).
 
     ``interfaces`` selects the interfaces of the ``Zeroconf`` created when no
-    ``zc`` is passed (default ``"one-per-subnet"``; see ``new_zeroconf``), and
-    with no OS responder the addresses published for the fallback name come
-    only from them. With a passed ``zc`` it limits only those addresses
-    (default: all of this host's). Under ``"one-per-subnet"`` only the kept
-    interface answers: if it loses its link, advertising stops until restart
-    even when a dropped interface on the same subnet is up; pass ``"all"``
-    on a host that relies on that failover.
+    ``zc`` is passed (default ``"one-per-subnet"``), and with no OS responder
+    the addresses published for the fallback name come only from them. A list
+    (``["eth0", "wlan0"]``) is a ranked candidate set: per IPv4 subnet, the
+    first listed interface that is up and has an address is used (see
+    ``_mdns_core.advertise_selection``). With a passed ``zc`` it limits only
+    the published addresses (default: all of this host's).
+
+    An owned ``Zeroconf`` follows interface changes: every
+    ``interface_check_interval`` seconds (None: never) a daemon thread compares
+    the interfaces and their addresses with the last check, and when the
+    selection changes it withdraws the services, replaces the ``Zeroconf``
+    with one on the new selection and registers them again. So with
+    ``eth0`` and ``wlan0`` on one subnet, Wi-Fi takes over while Ethernet is
+    down and Ethernet takes back when it returns. ``check_interfaces()``
+    runs a check at once. With a passed ``zc``, re-selection is the caller's.
     """
 
     def __init__(
@@ -308,10 +311,10 @@ class Advertiser:
         instance_name: str | None = None,
         detect_timeout: float = 3.0,
         interfaces: str | Sequence[str] | None = None,
+        interface_check_interval: float | None = DEFAULT_INTERFACE_CHECK_INTERVAL,
     ):
         if zc is None and interfaces is None:
             interfaces = INTERFACES_ONE_PER_SUBNET
-        self._interfaces = interfaces
         self._plan = core.AdvertisementPlan(
             identity,
             port=port,
@@ -325,6 +328,12 @@ class Advertiser:
         )
         self._zc = zc
         self._own_zc: Zeroconf | None = None
+        self._watch = core.InterfaceWatch(interfaces) if zc is None else None
+        self._interval = interface_check_interval
+        self._lock = threading.Lock()  # serializes start, stop and moves
+        self._stopping = threading.Event()
+        self._watcher: threading.Thread | None = None
+        self._active = False  # started on an owned Zeroconf, not yet stopped
         self._detect_timeout = detect_timeout
         self._infos: list[ServiceInfo] = []
         self.server: str | None = None
@@ -341,29 +350,94 @@ class Advertiser:
 
     def start(self) -> Advertiser:
         """Register the services; blocks while the host name is found and names are probed (a few seconds)."""
-        if self._infos:
-            return self
-        zc = self._zc
-        if zc is None:
-            zc = self._own_zc = new_zeroconf(self._interfaces)
-        try:
-            self.server, self.instance_name, self._infos = _run(
-                zc, core.async_advertise(zc, self._plan, self._detect_timeout)
-            )
-        except BaseException:
-            self._close_own()
-            raise
+        with self._lock:
+            if self._infos or self._active:
+                return self
+            if self._zc is not None:
+                self._advertise(self._zc, core.FROM_PLAN)
+                return self
+            selection = self._watch.initial()
+            self._own_zc = _zeroconf_on(selection)
+            try:
+                self._advertise(self._own_zc, selection)
+            except BaseException:
+                self._close_own()
+                raise
+            self._active = True
+            self._stopping.clear()
+            if self._interval is not None:
+                self._watcher = threading.Thread(
+                    target=self._watch_loop, name="ebus-advertiser-interfaces", daemon=True
+                )
+                self._watcher.start()
         return self
 
-    def stop(self) -> None:
-        """Withdraw the services (goodbye packets) and close an owned ``Zeroconf``."""
-        zc = self._zc or self._own_zc
-        try:
-            if self._infos and zc is not None:
-                _run(zc, core.async_unregister(zc, self._infos))
-        finally:
-            self._infos = []
+    def _advertise(self, zc: Zeroconf, selection) -> None:
+        self.server, self.instance_name, self._infos = _run(
+            zc, core.async_advertise(zc, self._plan, self._detect_timeout, selection)
+        )
+
+    def check_interfaces(self) -> bool:
+        """Check the interfaces now; True if the advertisement moved.
+
+        Only between ``start`` and ``stop`` of an advertiser that owns its
+        ``Zeroconf``; otherwise False. A failed move is logged and retried on
+        the next check.
+        """
+        with self._lock:
+            if not self._active or self._stopping.is_set():
+                return False
+            move, selection = self._watch.check()
+            if not move:
+                return False
+            self._withdraw()
             self._close_own()
+            try:
+                self._own_zc = _zeroconf_on(selection)
+                self._advertise(self._own_zc, selection)
+            except Exception:
+                logger.warning("reason=advertiseMoveFailed", exc_info=True)
+                self._close_own()
+                self._watch.failed()
+                return False
+            except BaseException:
+                self._close_own()
+                self._watch.failed()
+                raise
+            self._watch.moved()
+            return True
+
+    def _watch_loop(self) -> None:
+        while not self._stopping.wait(self._interval):
+            try:
+                self.check_interfaces()
+            except Exception:
+                logger.warning("reason=interfaceCheckFailed", exc_info=True)
+
+    def stop(self) -> None:
+        """Withdraw the services (goodbye packets), end the interface checks
+        and close an owned ``Zeroconf``."""
+        self._stopping.set()
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None and watcher is not threading.current_thread():
+            watcher.join()
+        with self._lock:
+            self._active = False
+            try:
+                self._withdraw()
+            finally:
+                self._close_own()
+
+    def _withdraw(self) -> None:
+        zc = self._zc or self._own_zc
+        infos, self._infos = self._infos, []
+        if infos and zc is not None:
+            try:
+                _run(zc, core.async_unregister(zc, infos))
+            except Exception:
+                if zc is self._zc:
+                    raise
+                logger.warning("reason=withdrawFailed", exc_info=True)
 
     def _close_own(self) -> None:
         if self._own_zc is not None:

@@ -30,9 +30,7 @@ class FakeAsyncZeroconf:
         self.closed = True
 
 
-def test_async_requires_caller_owned_instance():
-    with pytest.raises(TypeError, match="AsyncZeroconf"):
-        mdns_async.Advertiser(IDENT, None)
+def test_async_functions_require_caller_owned_instance():
     with pytest.raises(TypeError):
         asyncio.run(mdns_async.browse(None, "_ebus._tcp"))
 

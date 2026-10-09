@@ -160,10 +160,12 @@ A `Zeroconf` this library creates uses the interfaces selected by `interfaces=`,
 | Value | Interfaces |
 |---|---|
 | `"all"` | Every interface (python-zeroconf's default). The default for `new_zeroconf()`, `browse()`, `browse_many()` and `find_broker()`. |
-| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback is left out, and an interface with no IPv4 address is kept. The default for an `Advertiser` that creates its own instance. Only the kept interface answers queries: if it loses its link or address, the host stops advertising until restarted, even when a dropped interface on the same subnet is still up. Use `"all"` on a host that relies on that failover. |
-| `["eth0"]`, `["192.0.2.7"]` | The named interfaces (all their addresses) and the given addresses. An unknown name or an address no interface holds raises `ValueError`. |
+| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback and interfaces that are not up are left out, and an interface with no IPv4 address is kept. The default for an `Advertiser` that creates its own instance. |
+| `["eth0", "wlan0"]`, `["192.0.2.7"]` | For browsing, the named interfaces (all their addresses) and the given addresses; an unknown name or an address no interface holds raises `ValueError`. For `Advertiser`, a ranked candidate set: per IPv4 subnet, the first listed interface that is up and has an address. `start()` raises `ValueError` when none is. |
 
-This keeps a host with wired Ethernet and Wi-Fi on one subnet (a Raspberry Pi, for one) from advertising the same records on both links. An interface counts as Wi-Fi when its name starts with `wl` or `wifi` (`wlan0`, `wlp3s0`), its description says Wi-Fi, wireless or WLAN, or Linux lists `wireless` or `phy80211` under `/sys/class/net/<name>`; among equals the first interface wins. The heuristic does not recognize macOS names (`en0` can be Wi-Fi or wired), so pass names there when it matters.
+This keeps a host with wired Ethernet and Wi-Fi on one subnet (a Raspberry Pi, for one) from advertising the same records on both links. An interface counts as Wi-Fi when its name starts with `wl` or `wifi` (`wlan0`, `wlp3s0`), its description says Wi-Fi, wireless or WLAN, or Linux lists `wireless` or `phy80211` under `/sys/class/net/<name>`; among equals the first interface wins. The heuristic does not recognize macOS names (`en0` can be Wi-Fi or wired), so pass a ranked list there when it matters. An interface is up when it has an address and, on Linux, its `/sys/class/net/<name>/operstate` is not `down`, `lowerlayerdown`, `dormant` or `notpresent`; elsewhere the address alone counts.
+
+An `Advertiser` that creates its own instance follows interface changes. Every `interface_check_interval` seconds (default 5; `None` disables) it compares the interfaces, their up state and their addresses with the last check, unprivileged, from a daemon thread (`mdns`) or a task (`mdns_async`) that `stop()` ends. When the selection changes it withdraws the services, replaces its instance with one on the new selection and registers them again with fresh announcements, logging `reason=advertiseInterfacesChanged` with the old and new interfaces. With `eth0` and `wlan0` on one subnet, Wi-Fi takes over while Ethernet is down and Ethernet takes back when it returns. While no candidate is up the advertisement stays where it is, and the next interface to come up is a move. `check_interfaces()` runs a check at once, for a caller with its own change notifications. With a passed `zc` or `aiozc`, re-selection is the caller's.
 
 With no OS responder, `Advertiser` publishes only the selected interfaces' addresses for its fallback name. `interfaces=` together with a passed `zc` raises `ValueError` in `browse()`, `browse_many()` and `find_broker()`; on `Advertiser` it then limits only those published addresses. For an instance you build yourself, `resolve_interfaces()` (in `mdns` and `mdns_async`) turns the same values into the `interfaces` argument of `Zeroconf` or `AsyncZeroconf`:
 
@@ -178,9 +180,11 @@ aiozc = AsyncZeroconf(
 advertiser = mdns_async.Advertiser(identity, aiozc, interfaces="one-per-subnet")
 ```
 
+`mdns_async.Advertiser(identity)` with no `aiozc` creates and closes its own `AsyncZeroconf` and follows interface changes as above.
+
 ### asyncio and Home Assistant
 
-`ebus_service_discovery.mdns_async` has the same operations as coroutines. Each requires the caller's `AsyncZeroconf` and never creates or closes it, which is what a Home Assistant integration must do with the shared instance:
+`ebus_service_discovery.mdns_async` has the same operations as coroutines. Each takes the caller's `AsyncZeroconf` and never creates or closes it (only `Advertiser` creates its own when none is passed), which is what a Home Assistant integration must do with the shared instance:
 
 ```python
 from homeassistant.components import zeroconf
