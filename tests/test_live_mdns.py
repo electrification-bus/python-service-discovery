@@ -22,6 +22,8 @@ from zeroconf.asyncio import AsyncZeroconf  # noqa: E402
 from ebus_service_discovery import mdns, mdns_async  # noqa: E402
 from ebus_service_discovery._mdns_core import default_ip_version  # noqa: E402
 from ebus_service_discovery.ebus import (  # noqa: E402
+    BrokerEndpoint,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -92,6 +94,33 @@ def test_second_advertiser_with_same_name_is_renamed():
         zc2.close()
 
 
+def test_advertiser_brokers_browse_as_endpoints():
+    name = _unique("sd-live-brokers")
+    ident = Identity(
+        device_ids=[name],
+        roles=["broker-host"],
+        manufacturer="Example",
+        model="EX-1",
+        serial_number=name,
+    )
+    brokers = [BrokerService(port=18883), BrokerService("_mqtt._tcp", port=11883)]
+    with mdns.Advertiser(ident, brokers=brokers, instance_name=name) as adv:
+        zc = _zc()
+        try:
+            found = {
+                stype: _find(mdns.browse(stype, BROWSE, zc=zc), name)
+                for stype in ("_secure-mqtt._tcp", "_mqtt._tcp")
+            }
+        finally:
+            zc.close()
+    for svc in brokers:
+        assert len(found[svc.service_type]) == 1
+        ep = BrokerEndpoint.from_instance(found[svc.service_type][0])
+        expected = svc.endpoint(adv.server, ident)
+        assert (ep.host, ep.port, ep.txt) == (expected.host, expected.port, expected.txt)
+        assert ep.addresses, "the OS responder answers the host's addresses"
+
+
 def _broker_info(name: str, server: str, broker_host: str) -> ServiceInfo:
     return ServiceInfo(
         "_secure-mqtt._tcp.local.",
@@ -118,8 +147,8 @@ def test_find_fake_secure_mqtt_broker():
         zc.register_service(info)
         try:
             # Other brokers may be on the network: the configured URL names
-            # this one, and discovery-with-fallback prefers a discovered broker
-            # whose host matches it.
+            # this one, and discovery-with-fallback accepts only a discovered
+            # broker whose host matches it.
             base = {"host": "unused.example", "tls_ca_cert": "/path/ca.pem"}
             ep = mdns.find_broker(
                 "discovery-with-fallback",

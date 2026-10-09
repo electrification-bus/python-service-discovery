@@ -16,7 +16,7 @@ from test_mdns import (  # noqa: E402
 )
 
 from ebus_service_discovery import mdns_async  # noqa: E402
-from ebus_service_discovery.ebus import HttpService, RetrySchedule  # noqa: E402
+from ebus_service_discovery.ebus import BrokerService, HttpService, RetrySchedule  # noqa: E402
 
 # --- mdns_async -------------------------------------------------------------------
 
@@ -30,9 +30,7 @@ class FakeAsyncZeroconf:
         self.closed = True
 
 
-def test_async_requires_caller_owned_instance():
-    with pytest.raises(TypeError, match="AsyncZeroconf"):
-        mdns_async.Advertiser(IDENT, None)
+def test_async_functions_require_caller_owned_instance():
     with pytest.raises(TypeError):
         asyncio.run(mdns_async.browse(None, "_ebus._tcp"))
 
@@ -51,6 +49,25 @@ def test_async_advertiser():
     assert not adv.running
     assert aiozc.zeroconf.registered == {}
     assert not aiozc.closed and not aiozc.zeroconf.closed
+
+
+@pytest.mark.usefixtures("os_name")
+def test_async_advertiser_brokers():
+    aiozc = FakeAsyncZeroconf()
+
+    async def run():
+        async with mdns_async.Advertiser(IDENT, aiozc, brokers=BrokerService()):
+            names = sorted(aiozc.zeroconf.registered)
+            info = aiozc.zeroconf.registered["dev-1._secure-mqtt._tcp.local."]
+            assert info.server == "host-1.local." and info.addresses == []
+        return names
+
+    assert asyncio.run(run()) == [
+        "dev-1._device-info._tcp.local.",
+        "dev-1._ebus._tcp.local.",
+        "dev-1._secure-mqtt._tcp.local.",
+    ]
+    assert aiozc.zeroconf.registered == {}
 
 
 async def _cancel_start_once(aiozc, registered_count):
@@ -76,11 +93,11 @@ def test_cancelled_start_during_announcements_withdraws_services():
 
 @pytest.mark.usefixtures("os_name")
 def test_cancelled_start_during_probing_withdraws_services():
-    aiozc = FakeAsyncZeroconf(probing={"host-1._device-info._tcp.local."})
+    aiozc = FakeAsyncZeroconf(probing={"dev-1._device-info._tcp.local."})
     adv = asyncio.run(_cancel_start_once(aiozc, 1))
     assert not adv.running
     assert aiozc.zeroconf.registered == {}
-    assert aiozc.zeroconf.unregistered == ["host-1._ebus._tcp.local."]
+    assert aiozc.zeroconf.unregistered == ["dev-1._ebus._tcp.local."]
 
 
 def test_async_find_broker(monkeypatch):
@@ -98,6 +115,19 @@ def test_async_find_broker_configured_only(monkeypatch):
         mdns_async.find_broker(FakeAsyncZeroconf(), "configured-only", "mqtt://c.local")
     )
     assert ep.host == "c.local" and calls == []
+
+
+def test_async_find_broker_fallback_does_not_take_other_broker(monkeypatch):
+    other = _broker("_secure-mqtt._tcp", server="broker-2.local")
+    _patch_browse(monkeypatch, mdns_async, [[other], [other], [other]])
+    mode, url = "discovery-with-fallback", "mqtts://broker-1.local"
+    ep = asyncio.run(mdns_async.find_broker(FakeAsyncZeroconf(), mode, url, schedule=FAST))
+    assert ep.host == "broker-1.local"
+    _patch_browse(monkeypatch, mdns_async, [[other]])
+    ep = asyncio.run(
+        mdns_async.find_broker(FakeAsyncZeroconf(), mode, url, schedule=FAST, allow_unmatched=True)
+    )
+    assert ep.host == "broker-2.local"
 
 
 def test_async_find_broker_stop(monkeypatch):

@@ -89,13 +89,13 @@ client = MqttClient.from_config(endpoint.mqtt_cfg(base_cfg), client_id="example-
 
 | Mode | Behavior |
 |---|---|
-| `configured-only` | Returns the configured broker. Never browses. |
+| `configured-only` | Returns the configured broker. Never browses. The mode for a broker whose location is known, including a broker on the same host (`mqtt://localhost`). |
 | `discovery-only` (the default when the mode is `None`) | Browses until a broker is found, or until `stop` is set or the schedule's `max_attempts` runs out (then `None`). |
-| `discovery-with-fallback` | Browses; if the first three attempts (or all of them, when `max_attempts` is fewer) find nothing, returns the configured broker. |
+| `discovery-with-fallback` | Browses for the configured broker; if the first three attempts (or all of them, when `max_attempts` is fewer) do not find it, returns the configured broker. Another discovered broker is never chosen in its place unless `allow_unmatched=True`. With no configured broker, behaves as `discovery-only`. |
 
 Each attempt browses `_secure-mqtt._tcp`, `_mqtt-wss._tcp`, `_mqtt-ws._tcp` and `_mqtt._tcp` for `browse_timeout` seconds (default 3). A broker advertised under several types counts once, at its most preferred type, in the specification's order. The WebSocket types are logged but not selected, since ebus-mqtt-client connects over TCP. When TLS is configured (an `mqtts://` URL or `use_tls` in `base_cfg`), only `_secure-mqtt._tcp` is selected, so the credentials are never sent in cleartext to a plain broker that answered the multicast query. Pass `accept=` to change either. Attempts follow `RetrySchedule`: three attempts 3 s apart, then one every 30 s. The broker host is the TXT `broker` value when advertised, otherwise the SRV target. There is no reachability probe: connecting is the probe.
 
-When several distinct brokers are found, the specification leaves the choice to the implementation. `select_broker()` prefers, in `discovery-with-fallback`, a discovered broker whose host matches the configured one; otherwise the most preferred transport, then the lowest host name. It logs that it chose among several. Configure the intended broker's URL in a multi-broker deployment.
+In `discovery-with-fallback`, a discovered broker is the configured one when the configured host equals its TXT `broker` name or SRV target, or, for a host configured as an IP address, one of its advertised addresses (`match_configured()`). Discovery then supplies its current port and transport. A match by address keeps the configured address as the host for plain MQTT; for TLS the host is the discovered TXT `broker` name or SRV target, the name the broker's certificate is issued for, so the client must be able to resolve it. In `discovery-only`, or with no configured broker, the specification leaves the choice among several to the implementation: `select_broker()` takes the most preferred transport, then the lowest host name. Every discovered broker not chosen is logged. Configure the intended broker's URL in a multi-broker deployment.
 
 ### Advertise
 
@@ -117,7 +117,33 @@ with mdns.Advertiser(identity, http=HttpService(port=8080, openapi="/api/v1/open
     ...  # run the client
 ```
 
-`Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`) under one instance name, by default the host's label. If another host already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
+`Advertiser` registers `_ebus._tcp` and `_device-info._tcp` (plus `_http._tcp` or `_https._tcp` for each `HttpService`, and a broker service type for each `BrokerService`) under one instance name: `instance_name=` if given, else the first of `Identity.device_ids`, else (for a device id over 60 bytes) the host's label. If another advertiser already uses that instance name it becomes `<name>-2`, up to `<name>-99`. `Identity` validates the required TXT keys, joins several device ids with commas into `device_id`, rejects a TXT string over 255 bytes, and warns (`TxtSizeWarning`) as a string passes 200 bytes or the whole record passes 1300.
+
+A host that runs an MQTT broker advertises it with `brokers=`, one `BrokerService` per transport its broker listens on. On a Linux broker host running avahi-daemon:
+
+```python
+from ebus_service_discovery import mdns
+from ebus_service_discovery.ebus import MQTT_SERVICE, BrokerService, Identity
+
+identity = Identity(
+    device_ids=["example-gateway-1"],
+    roles=["broker-host", "device"],
+    manufacturer="Example",
+    model="GW-1",
+    serial_number="sn-0100",
+)
+brokers = [
+    BrokerService(),  # _secure-mqtt._tcp on 8883, TXT broker = this host's .local name
+    BrokerService(MQTT_SERVICE, port=1883),  # plain MQTT, only where TLS is not feasible
+]
+with mdns.Advertiser(identity, brokers=brokers) as adv:
+    print(adv.instance_name, "advertises", [b.endpoint(adv.server).url for b in brokers])
+    ...  # run until shutdown
+```
+
+`BrokerService` takes any of `BROKER_PREFERENCE`; `port` defaults to the type's `BROKER_DEFAULT_PORT`. Its TXT carries the keys the specification lists for the type: `txtvers` and `protocol` (default `mqtt-v5`) always, `broker` and `device_id` for `_secure-mqtt._tcp`, and `path` and `subprotocol` (default `/mqtt` and `mqtt`) for `_mqtt-ws._tcp` and `_mqtt-wss._tcp`. `broker` defaults to the SRV target; set `broker=` to the name the broker's certificate is issued for when that differs. `endpoint(server)` returns the `BrokerEndpoint` a client resolves from the advertisement. One `BrokerService` per type is allowed, and `brokers=` with no `broker-host` role in `identity.roles` logs a warning.
+
+The rename probe detects only names another responder advertises with a PTR record for the service type. macOS mDNSResponder publishes a bare TXT record at `<host label>._device-info._tcp.local.`, which the probe does not see, so an instance named after the host label on macOS shares that name with the OS record and resolvers see two TXT record sets for it. On macOS, pass `instance_name=` when the default would be the host label (a device id over 60 bytes, or one equal to the host label), and never pass the host label itself.
 
 The services are advertised under the `.local` name the operating system's mDNS responder (mDNSResponder on macOS, avahi-daemon on Linux) already claims, and carry no address records: the OS responder answers the address queries for its own name, per interface. The advertiser learns that name by asking the OS responder for the reverse mapping of this host's addresses. It does not publish addresses under the OS name itself, because on macOS python-zeroconf's address records were answered on every interface and, while mDNSResponder was re-probing its name, made it rename the host to `<name>-2.local`. If an OS responder is present but does not answer, `start()` raises; with no OS responder at all, the advertiser uses `<hostname>.local` and publishes this host's addresses, after checking that no other host answers for that name. `server=` skips the detection and is published with `addresses=` (default none). Without `server=`, `addresses=` replaces this host's addresses only when there is no OS responder; under the OS name it is ignored, with a warning.
 
@@ -127,9 +153,38 @@ On macOS a python-zeroconf instance created with `IPVersion.All` does not join t
 
 Every `mdns` call takes an optional `zc`. Without one, a `Zeroconf` is created for the call (or for the advertiser's lifetime) and closed afterwards; a passed instance is never closed. Call `mdns` from a thread other than the instance's own event loop.
 
+### Interfaces
+
+A `Zeroconf` this library creates uses the interfaces selected by `interfaces=`, accepted by `new_zeroconf()`, `browse()`, `browse_many()`, `find_broker()` and `Advertiser`:
+
+| Value | Interfaces |
+|---|---|
+| `"all"` | Every interface (python-zeroconf's default). The default for `new_zeroconf()`, `browse()`, `browse_many()` and `find_broker()`. |
+| `"one-per-subnet"` | Interfaces that share an IPv4 subnet collapse to one, wired preferred over Wi-Fi; loopback, interfaces that are not up and interfaces with only link-local IPv6 addresses (a container's veth) are left out, and an interface with no IPv4 address but a routable IPv6 one is kept. The default for an `Advertiser` that creates its own instance. |
+| `["eth0", "wlan0"]`, `["192.0.2.7"]` | For browsing, the named interfaces (all their addresses) and the given addresses; an unknown name or an address no interface holds raises `ValueError`. For an `Advertiser` that creates its own instance, a ranked candidate set: per IPv4 subnet, the first listed interface that is up and has an address. When none is up at `start()`, it advertises once one comes up (with `interface_check_interval=None`, `start()` raises `ValueError`). |
+
+This keeps a host with wired Ethernet and Wi-Fi on one subnet (a Raspberry Pi, for one) from advertising the same records on both links. An interface counts as Wi-Fi when its name starts with `wl` or `wifi` (`wlan0`, `wlp3s0`), its description says Wi-Fi, wireless or WLAN, or Linux lists `wireless` or `phy80211` under `/sys/class/net/<name>`; among equals the first interface wins. The heuristic does not recognize macOS names (`en0` can be Wi-Fi or wired), so pass a ranked list there when it matters. An interface is up when it has an address and, on Linux, its `/sys/class/net/<name>/operstate` is not `down`, `lowerlayerdown`, `dormant` or `notpresent`; elsewhere the address alone counts.
+
+An `Advertiser` that creates its own instance follows interface changes. Every `interface_check_interval` seconds (default 5; `None` disables) it compares the interfaces, their up state and their addresses with the last check, unprivileged, from a daemon thread (`mdns`) or a task (`mdns_async`) that `stop()` ends. When the instance would be built differently (other interfaces, or another IPv4 address) it withdraws the services, replaces its instance and registers them again under the same host name, logging `reason=advertiseInterfacesChanged` with the old and new interfaces. A move takes about 2 s (measured on macOS), during which browsers see the services removed and then added again. When only the addresses published for the fallback name change, such as an IPv6 temporary address rotating, it re-announces them in place (`reason=advertiseAddressesChanged`); under the OS responder's name such a change does nothing. With `eth0` and `wlan0` on one subnet, Wi-Fi takes over while Ethernet is down and Ethernet takes back when it returns. While no candidate is up the advertisement stays where it is, and the next interface to come up is a move. `check_interfaces()` runs a check at once, for a caller with its own change notifications. With a passed `zc` or `aiozc`, re-selection is the caller's.
+
+With no OS responder, `Advertiser` publishes only the selected interfaces' addresses for its fallback name. `interfaces=` together with a passed `zc` raises `ValueError` in `browse()`, `browse_many()` and `find_broker()`; on `Advertiser` it then limits only those published addresses, read as `resolve_interfaces()` reads it (every named interface, an unknown name raises `ValueError`), and `start()` raises `ValueError` when the selection has no address. For an instance you build yourself, `resolve_interfaces()` (in `mdns` and `mdns_async`) turns the same values into the `interfaces` argument of `Zeroconf` or `AsyncZeroconf`:
+
+```python
+from zeroconf.asyncio import AsyncZeroconf
+from ebus_service_discovery import mdns_async
+
+version = mdns_async.default_ip_version()
+aiozc = AsyncZeroconf(
+    interfaces=mdns_async.resolve_interfaces("one-per-subnet", version), ip_version=version
+)
+advertiser = mdns_async.Advertiser(identity, aiozc, interfaces="one-per-subnet")
+```
+
+`mdns_async.Advertiser(identity)` with no `aiozc` creates and closes its own `AsyncZeroconf` and follows interface changes as above.
+
 ### asyncio and Home Assistant
 
-`ebus_service_discovery.mdns_async` has the same operations as coroutines. Each requires the caller's `AsyncZeroconf` and never creates or closes it, which is what a Home Assistant integration must do with the shared instance:
+`ebus_service_discovery.mdns_async` has the same operations as coroutines. Each takes the caller's `AsyncZeroconf` and never creates or closes it (only `Advertiser` creates its own when none is passed), which is what a Home Assistant integration must do with the shared instance:
 
 ```python
 from homeassistant.components import zeroconf

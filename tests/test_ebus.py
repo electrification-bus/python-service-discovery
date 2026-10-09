@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import subprocess
 import sys
@@ -17,12 +18,14 @@ from ebus_service_discovery.ebus import (
     TCP_BROKER_TYPES,
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
     TxtSizeWarning,
     check_txt,
     decode_txt,
+    match_configured,
     parse_ebus_txt,
     rank_brokers,
     select_broker,
@@ -288,6 +291,86 @@ def test_http_service_txt():
     }
 
 
+# --- BrokerService ----------------------------------------------------------
+
+
+def test_broker_service_txt_per_type():
+    ident = _identity(device_ids=["dev-1", "dev-2"], roles=["broker-host"])
+    server = "host-1.local."
+    assert BrokerService().txt(ident, server) == {
+        "txtvers": "1",
+        "protocol": "mqtt-v5",
+        "broker": "host-1.local",
+        "device_id": "dev-1,dev-2",
+    }
+    for stype in (MQTT_WSS_SERVICE, MQTT_WS_SERVICE):
+        assert BrokerService(stype).txt(ident, server) == {
+            "txtvers": "1",
+            "protocol": "mqtt-v5",
+            "path": "/mqtt",
+            "subprotocol": "mqtt",
+        }
+    assert BrokerService(MQTT_SERVICE, protocol="mqtt-v3.1.1").txt(ident, server) == {
+        "txtvers": "1",
+        "protocol": "mqtt-v3.1.1",
+    }
+
+
+def test_broker_service_defaults_and_overrides():
+    assert [BrokerService(t).port for t in BROKER_PREFERENCE] == [8883, 9002, 9001, 1883]
+    svc = BrokerService(port=18883, broker="broker.example.local.", extra_txt={"x": "1"})
+    txt = svc.txt(_identity(), "host-1.local.")
+    assert txt["broker"] == "broker.example.local"
+    assert txt["x"] == "1"
+    # extra_txt never replaces a key the specification defines
+    assert (
+        BrokerService(MQTT_SERVICE, extra_txt={"protocol": "x"}).txt(_identity(), "h.local.")[
+            "protocol"
+        ]
+        == "mqtt-v5"
+    )
+
+
+def test_broker_service_rejects_unknown_type_and_logs_unknown_protocol(caplog):
+    with pytest.raises(ValueError, match="unknown broker service type"):
+        BrokerService("_http._tcp")
+    with caplog.at_level(logging.WARNING):
+        BrokerService(protocol="mqtt-v4")
+    assert "reason=unknownMqttProtocol,protocol=mqtt-v4" in caplog.text
+
+
+def test_broker_service_txt_too_long():
+    with pytest.raises(ValueError, match="at most 255"):
+        BrokerService(extra_txt={"x": "y" * 300}).txt(_identity(), "h.local.")
+
+
+@pytest.mark.parametrize(
+    "svc,host",
+    [
+        (BrokerService(), "host-1.local"),
+        (BrokerService(broker="broker.example.local"), "broker.example.local"),
+        (BrokerService(MQTT_SERVICE), "host-1.local"),
+        (BrokerService(MQTT_WS_SERVICE, port=8080), "host-1.local"),
+        (BrokerService(MQTT_SERVICE, extra_txt={"broker": "b.local."}), "b.local"),
+    ],
+)
+def test_broker_service_endpoint_matches_what_a_client_resolves(svc, host):
+    ident = _identity(roles=["broker-host"])
+    server = "host-1.local."
+    advertised = BrokerEndpoint.from_instance(
+        _inst(svc.service_type, server=server, port=svc.port, txt=svc.txt(ident, server))
+    )
+    ep = svc.endpoint(server, ident)
+    assert ep.host == advertised.host == host
+    assert (ep.service_type, ep.port, ep.txt) == (
+        advertised.service_type,
+        advertised.port,
+        advertised.txt,
+    )
+    assert ep.server == advertised.server == "host-1.local"
+    assert svc.endpoint(server).txt == {}
+
+
 # --- BrokerEndpoint ---------------------------------------------------------
 
 
@@ -454,11 +537,88 @@ def test_select_discovery_only():
     assert select_broker(None, conf, [b]) is b
 
 
-def test_select_discovery_with_fallback():
+def test_select_discovery_with_fallback_never_replaces_configured(caplog):
     conf = BrokerEndpoint.from_url("mqtts://conf.local")
     b = _ep(SECURE_MQTT_SERVICE, "b.local")
-    assert select_broker("discovery-with-fallback", conf, [b]) is b
+    with caplog.at_level(logging.INFO, logger="ebus_service_discovery.ebus"):
+        assert select_broker("discovery-with-fallback", conf, [b]) is conf
+    assert "brokerNotChosen,url=mqtts://b.local:1,chosen=mqtts://conf.local:8883" in caplog.text
     assert select_broker("discovery-with-fallback", conf, []) is conf
+
+
+def test_select_discovery_with_fallback_takes_discovered_port_of_configured():
+    conf = BrokerEndpoint.from_url("mqtt://conf.local")
+    other = _ep(SECURE_MQTT_SERVICE, "a.local")
+    match = _ep(SECURE_MQTT_SERVICE, "conf.example.net", server="Conf.local.", port=18883)
+    assert select_broker("discovery-with-fallback", conf, [other, match]) is match
+
+
+def test_select_discovery_with_fallback_allow_unmatched():
+    conf = BrokerEndpoint.from_url("mqtts://conf.local")
+    b1 = _ep(SECURE_MQTT_SERVICE, "b1.local")
+    b2 = _ep(SECURE_MQTT_SERVICE, "conf.local")
+    mode = "discovery-with-fallback"
+    assert select_broker(mode, conf, [b1], allow_unmatched=True) is b1
+    assert select_broker(mode, conf, [b1, b2], allow_unmatched=True) is b2
+    assert select_broker(mode, conf, [], allow_unmatched=True) is conf
+
+
+def test_select_discovery_with_fallback_without_configured_takes_first():
+    b1 = _ep(SECURE_MQTT_SERVICE, "b1.local")
+    b2 = _ep(SECURE_MQTT_SERVICE, "b2.local")
+    assert select_broker("discovery-with-fallback", None, [b1, b2]) is b1
+    assert select_broker("discovery-with-fallback", None, []) is None
+
+
+@pytest.mark.parametrize(
+    "url,advertised",
+    [
+        ("mqtt://192.0.2.20", "192.0.2.20"),
+        ("mqtt://[2001:db8::20]", "2001:db8::20"),
+        ("mqtt://[fe80::20%25eth0]", "fe80::20%eth0"),
+    ],
+)
+def test_match_configured_by_address(url, advertised):
+    conf = BrokerEndpoint.from_url(url)
+    other = BrokerEndpoint(
+        SECURE_MQTT_SERVICE, "a.local", 8883, addresses=(Address.parse("192.0.2.10"),)
+    )
+    b = BrokerEndpoint(
+        SECURE_MQTT_SERVICE,
+        "b.local",
+        18883,
+        addresses=(Address.parse("192.0.2.99"), Address.parse(advertised)),
+    )
+    chosen = select_broker("discovery-with-fallback", conf, [other, b])
+    assert chosen is b  # TLS: the certificate is issued for the discovered name
+    assert match_configured(conf, [other]) is None
+    plain = dataclasses.replace(b, service_type=MQTT_SERVICE, port=11883)
+    chosen = select_broker("discovery-with-fallback", conf, [plain])
+    assert (chosen.host, chosen.port, chosen.use_tls) == (conf.host, 11883, False)
+    assert chosen.addresses == b.addresses
+
+
+def test_address_match_on_tls_verifies_against_broker_name():
+    base = {"host": "192.0.2.10", "port": 1883, "tls_ca_cert": "/ca.pem", "tls_insecure": False}
+    conf = BrokerEndpoint.from_mqtt_cfg(base)
+    b = BrokerEndpoint(
+        SECURE_MQTT_SERVICE,
+        "broker-a.local",
+        8883,
+        txt={"broker": "broker-a.local"},
+        addresses=(Address.parse("192.0.2.10"),),
+        server="host-a.local",
+    )
+    cfg = select_broker("discovery-with-fallback", conf, [b]).mqtt_cfg(base)
+    assert (cfg["host"], cfg["port"], cfg["use_tls"]) == ("broker-a.local", 8883, True)
+    tls_conf = BrokerEndpoint.from_url("mqtts://192.0.2.10")
+    assert match_configured(tls_conf, [b]).host == "broker-a.local"
+
+
+def test_match_configured_by_name_ignores_addresses():
+    conf = BrokerEndpoint.from_url("mqtt://b.local")
+    other = BrokerEndpoint(MQTT_SERVICE, "a.local", 1883, addresses=(Address.parse("192.0.2.1"),))
+    assert match_configured(conf, [other]) is None
 
 
 def test_select_among_several_prefers_configured_host_and_logs(caplog):

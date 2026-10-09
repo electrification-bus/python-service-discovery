@@ -8,7 +8,9 @@ registers the ``_ebus._tcp`` / ``_device-info._tcp`` services (and
 
 Each takes an optional ``zeroconf.Zeroconf``. When none is passed one is
 created for the call (or for the advertiser's lifetime) and closed afterwards;
-a passed instance is never closed. Call these from a thread other than the
+a passed instance is never closed. ``interfaces=`` selects the interfaces of a
+created instance (see ``new_zeroconf``): browsing defaults to ``"all"``,
+advertising to ``"one-per-subnet"``. Call these from a thread other than the
 ``Zeroconf`` instance's own event loop. For asyncio hosts, use ``mdns_async``.
 
 Importing ``ebus_service_discovery`` does not import this module or zeroconf.
@@ -23,7 +25,7 @@ import threading
 from collections.abc import Iterator, Mapping, Sequence
 
 try:
-    from zeroconf import IPVersion, ServiceInfo, Zeroconf
+    from zeroconf import ServiceInfo, Zeroconf
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         'ebus_service_discovery.mdns needs zeroconf: pip install "ebus-service-discovery[zeroconf]"'
@@ -33,6 +35,7 @@ from ebus_service_discovery import _mdns_core as core
 from ebus_service_discovery.ebus import (
     BrokerEndpoint,
     BrokerMode,
+    BrokerService,
     HttpService,
     Identity,
     RetrySchedule,
@@ -43,27 +46,46 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BROWSE_TIMEOUT = 3.0
 
+INTERFACES_ALL = core.INTERFACES_ALL
+INTERFACES_ONE_PER_SUBNET = core.INTERFACES_ONE_PER_SUBNET
+DEFAULT_INTERFACE_CHECK_INTERVAL = core.DEFAULT_INTERFACE_CHECK_INTERVAL
+resolve_interfaces = core.resolve_interfaces
 
-def new_zeroconf() -> Zeroconf:
+
+def new_zeroconf(interfaces: str | Sequence[str] = INTERFACES_ALL) -> Zeroconf:
     """A ``Zeroconf`` configured as this module creates its own (see
-    ``_mdns_core.default_ip_version``); IPv4 only if IPv6 is unavailable."""
-    version = core.default_ip_version()
-    try:
-        return Zeroconf(ip_version=version)
-    except OSError:
-        if version is IPVersion.V4Only:
-            raise
-        logger.info("reason=ipv6Unavailable,fallback=ipv4")
-        return Zeroconf(ip_version=IPVersion.V4Only)
+    ``_mdns_core.default_ip_version``); IPv4 only if IPv6 is unavailable.
+
+    ``interfaces`` is ``"all"`` (python-zeroconf's default), ``"one-per-subnet"``
+    (interfaces sharing an IPv4 subnet collapse to one, wired preferred over
+    Wi-Fi; loopback left out), or interface names and addresses
+    (``["eth0"]``, ``["192.0.2.7"]``). See ``resolve_interfaces``.
+    """
+    return _zeroconf_on(core.instance_selection(interfaces))
+
+
+def _zeroconf_on(selection: list[core.SelectedInterface] | None) -> Zeroconf:
+    return core.create_instance(Zeroconf, selection)
+
+
+def _check_interfaces(zc: Zeroconf | None, interfaces: str | Sequence[str] | None) -> None:
+    if zc is not None and interfaces is not None:
+        raise ValueError(
+            "interfaces= applies only to a Zeroconf this library creates; "
+            "build the passed zc with new_zeroconf(interfaces) instead"
+        )
 
 
 @contextlib.contextmanager
-def _zeroconf(zc: Zeroconf | None) -> Iterator[Zeroconf]:
-    """Yield ``zc``, or a new instance closed on exit."""
+def _zeroconf(
+    zc: Zeroconf | None, interfaces: str | Sequence[str] | None = None
+) -> Iterator[Zeroconf]:
+    """Yield ``zc``, or a new instance on ``interfaces`` closed on exit."""
+    _check_interfaces(zc, interfaces)
     if zc is not None:
         yield zc
         return
-    own = new_zeroconf()
+    own = new_zeroconf(interfaces if interfaces is not None else INTERFACES_ALL)
     try:
         yield own
     finally:
@@ -117,15 +139,20 @@ def _run(zc: Zeroconf, coro, timeout: float | None = None):
 
 
 def browse(
-    service_type: str, timeout: float = DEFAULT_BROWSE_TIMEOUT, zc: Zeroconf | None = None
+    service_type: str,
+    timeout: float = DEFAULT_BROWSE_TIMEOUT,
+    zc: Zeroconf | None = None,
+    *,
+    interfaces: str | Sequence[str] | None = None,
 ) -> list[ServiceInstance]:
     """The instances of ``service_type`` (``_ebus._tcp``) seen within ``timeout`` seconds.
 
     Each instance is resolved (SRV, TXT, addresses) as it is seen; one not
     resolved within ``timeout`` is left out, so the call returns after about
-    ``timeout`` seconds.
+    ``timeout`` seconds. ``interfaces`` (default ``"all"``) applies when no
+    ``zc`` is passed.
     """
-    with _zeroconf(zc) as z:
+    with _zeroconf(zc, interfaces) as z:
         return _run(z, core.async_browse(z, service_type, timeout))
 
 
@@ -133,9 +160,11 @@ def browse_many(
     service_types: Sequence[str],
     timeout: float = DEFAULT_BROWSE_TIMEOUT,
     zc: Zeroconf | None = None,
+    *,
+    interfaces: str | Sequence[str] | None = None,
 ) -> list[ServiceInstance]:
     """Browse several service types at once for ``timeout`` seconds."""
-    with _zeroconf(zc) as z:
+    with _zeroconf(zc, interfaces) as z:
         return _run(z, core.async_browse_many(z, service_types, timeout))
 
 
@@ -149,6 +178,8 @@ def find_broker(
     accept: Sequence[str] | None = None,
     schedule: RetrySchedule | None = None,
     browse_timeout: float = DEFAULT_BROWSE_TIMEOUT,
+    allow_unmatched: bool = False,
+    interfaces: str | Sequence[str] | None = None,
 ) -> BrokerEndpoint | None:
     """Resolve the broker to connect to (framework.md requirement 22).
 
@@ -157,9 +188,12 @@ def find_broker(
 
     - ``configured-only``: returns the configured broker; never browses.
     - ``discovery-only`` (the default): browses until a broker is found.
-    - ``discovery-with-fallback``: browses; if the first ``fast_attempts`` of
-      ``schedule`` (or all ``max_attempts``, if fewer) find nothing, returns
-      the configured broker.
+    - ``discovery-with-fallback``: browses for the configured broker; if the
+      first ``fast_attempts`` of ``schedule`` (or all ``max_attempts``, if
+      fewer) do not find it, returns the configured broker. A different
+      discovered broker is never returned in its place unless
+      ``allow_unmatched`` is True. With no configured broker, this is
+      ``discovery-only``.
 
     Each attempt browses all four broker types for ``browse_timeout`` seconds.
     Brokers whose type is in ``accept`` are ranked by ``ebus.rank_brokers``
@@ -173,15 +207,23 @@ def find_broker(
     reachability probe: connecting is the probe.
 
     Connect with ``endpoint.mqtt_cfg(base_cfg)``, which keeps the TLS material
-    and credentials of ``base_cfg``.
+    and credentials of ``base_cfg``. ``interfaces`` (default ``"all"``) applies
+    when no ``zc`` is passed.
     """
     schedule = schedule or RetrySchedule()
     search = core.BrokerSearch(
-        mode, url, base_cfg, accept, schedule.fast_attempts, schedule.max_attempts
+        mode,
+        url,
+        base_cfg,
+        accept,
+        schedule.fast_attempts,
+        schedule.max_attempts,
+        allow_unmatched,
     )
+    _check_interfaces(zc, interfaces)
     if not search.needs_browse:
         return search.configured
-    with _zeroconf(zc) as z:
+    with _zeroconf(zc, interfaces) as z:
         for attempt, delay in enumerate(schedule.delays()):
             if delay and _wait(stop, delay):
                 return None
@@ -212,9 +254,15 @@ class Advertiser:
     """Advertise this entity's eBus services under the host's ``.local`` name.
 
     Registers ``_ebus._tcp`` and ``_device-info._tcp`` from ``identity``, and
-    ``_http._tcp`` / ``_https._tcp`` for each ``HttpService`` in ``http``.
-    All share one instance name, by default the host label; on a conflict it
-    becomes ``<name>-2`` through ``<name>-99``.
+    ``_http._tcp`` / ``_https._tcp`` for each ``HttpService`` in ``http``,
+    and one broker service type for each ``BrokerService`` in ``brokers`` (at
+    most one per type; its TXT ``broker`` defaults to the SRV target).
+    All share one instance name: ``instance_name``, else the first of
+    ``identity.device_ids`` (the host label if that is over 60 bytes). On a
+    conflict it becomes ``<name>-2`` through ``<name>-99``. The conflict probe
+    sees only names advertised with a PTR record for the service type, not the
+    bare TXT record macOS publishes at ``<host label>._device-info._tcp``, so do
+    not use the host label as ``instance_name`` on macOS.
 
     The SRV target is the name the OS responder already answers for this host,
     found over mDNS, and no address records are published, so the OS keeps
@@ -230,6 +278,32 @@ class Advertiser:
 
     ``port`` is the ``_ebus._tcp`` SRV port (default: the first HTTP port, else
     0); ``device_info_port`` is the ``_device-info._tcp`` port (default 0).
+
+    ``interfaces`` selects the interfaces of the ``Zeroconf`` created when no
+    ``zc`` is passed (default ``"one-per-subnet"``), and with no OS responder
+    the addresses published for the fallback name come only from them. A list
+    (``["eth0", "wlan0"]``) is a ranked candidate set: per IPv4 subnet, the
+    first listed interface that is up and has an address is used (see
+    ``_mdns_core.advertise_selection``). When none is up, ``start()`` returns
+    without advertising and the first check that finds one up starts the
+    advertisement (with ``interface_check_interval=None`` it raises
+    ``ValueError``). With a passed ``zc``, ``interfaces`` is read as
+    ``resolve_interfaces`` reads it and limits only the published addresses
+    (default: all of this host's); a selection with no address raises
+    ``ValueError``.
+
+    An owned ``Zeroconf`` follows interface changes: every
+    ``interface_check_interval`` seconds (None: never) a daemon thread compares
+    the interfaces and their addresses with the last check. When the
+    ``Zeroconf`` would be built differently (other interfaces, or another IPv4
+    address) it withdraws the services, replaces the ``Zeroconf`` and
+    registers them again under the same host name, about 2 s in which
+    browsers see the services removed and added again. When only the
+    published fallback addresses change (IPv6 address rotation, for one) it
+    re-announces them in place. So with ``eth0`` and ``wlan0`` on one subnet,
+    Wi-Fi takes over while Ethernet is down and Ethernet takes back when it
+    returns. ``check_interfaces()`` runs a check at once. With a passed
+    ``zc``, re-selection is the caller's.
     """
 
     def __init__(
@@ -237,6 +311,7 @@ class Advertiser:
         identity: Identity,
         *,
         http: HttpService | Sequence[HttpService] | None = None,
+        brokers: BrokerService | Sequence[BrokerService] | None = None,
         zc: Zeroconf | None = None,
         port: int | None = None,
         device_info_port: int = 0,
@@ -244,7 +319,11 @@ class Advertiser:
         addresses: Sequence[str] | None = None,
         instance_name: str | None = None,
         detect_timeout: float = 3.0,
+        interfaces: str | Sequence[str] | None = None,
+        interface_check_interval: float | None = DEFAULT_INTERFACE_CHECK_INTERVAL,
     ):
+        if zc is None and interfaces is None:
+            interfaces = INTERFACES_ONE_PER_SUBNET
         self._plan = core.AdvertisementPlan(
             identity,
             port=port,
@@ -253,9 +332,17 @@ class Advertiser:
             server=server,
             addresses=addresses,
             instance_name=instance_name,
+            brokers=brokers,
+            interfaces=interfaces,
         )
         self._zc = zc
         self._own_zc: Zeroconf | None = None
+        self._watch = core.InterfaceWatch(interfaces) if zc is None else None
+        self._interval = interface_check_interval
+        self._lock = threading.Lock()  # serializes start, stop and moves
+        self._stopping = threading.Event()
+        self._watcher: threading.Thread | None = None
+        self._active = False  # started on an owned Zeroconf, not yet stopped
         self._detect_timeout = detect_timeout
         self._infos: list[ServiceInfo] = []
         self.server: str | None = None
@@ -272,29 +359,115 @@ class Advertiser:
 
     def start(self) -> Advertiser:
         """Register the services; blocks while the host name is found and names are probed (a few seconds)."""
-        if self._infos:
-            return self
-        zc = self._zc
-        if zc is None:
-            zc = self._own_zc = new_zeroconf()
-        try:
-            self.server, self.instance_name, self._infos = _run(
-                zc, core.async_advertise(zc, self._plan, self._detect_timeout)
-            )
-        except BaseException:
-            self._close_own()
-            raise
+        with self._lock:
+            if self._infos or self._active:
+                return self
+            if self._zc is not None:
+                self._advertise(self._zc, core.FROM_PLAN)
+                return self
+            selection = self._watch.initial()
+            if selection == [] and self._interval is None:
+                raise self._watch.nothing_up()
+            self.server = None
+            if selection != []:  # else the first check that finds one up starts it
+                self._own_zc = _zeroconf_on(selection)
+                try:
+                    self._advertise(self._own_zc, selection)
+                except BaseException:
+                    self._close_own()
+                    raise
+            self._active = True
+            self._stopping.clear()
+            if self._interval is not None:
+                self._watcher = threading.Thread(
+                    target=self._watch_loop, name="ebus-advertiser-interfaces", daemon=True
+                )
+                self._watcher.start()
         return self
 
-    def stop(self) -> None:
-        """Withdraw the services (goodbye packets) and close an owned ``Zeroconf``."""
-        zc = self._zc or self._own_zc
-        try:
-            if self._infos and zc is not None:
-                _run(zc, core.async_unregister(zc, self._infos))
-        finally:
-            self._infos = []
+    def _advertise(self, zc: Zeroconf, selection, server: str | None = None) -> None:
+        self.server, self.instance_name, self._infos = _run(
+            zc, core.async_advertise(zc, self._plan, self._detect_timeout, selection, server)
+        )
+        if self._watch is not None:
+            self._watch.track_addresses = self._plan.publishes_selection
+
+    def check_interfaces(self) -> bool:
+        """Check the interfaces now; True if the advertisement moved.
+
+        Only between ``start`` and ``stop`` of an advertiser that owns its
+        ``Zeroconf``; otherwise False. A failed move is logged and retried on
+        the next check.
+        """
+        with self._lock:
+            if not self._active or self._stopping.is_set():
+                return False
+            change, selection = self._watch.check()
+            if change is None:
+                return False
+            if change == core.READDRESS:
+                zc = self._own_zc
+                try:
+                    self._infos = _run(
+                        zc,
+                        core.async_readdress(
+                            zc, self._plan, self.server, self.instance_name, selection
+                        ),
+                    )
+                except Exception:
+                    logger.warning("reason=advertiseReaddressFailed", exc_info=True)
+                    self._watch.failed()  # the next check moves
+                    return False
+                self._watch.moved()
+                return True
+            self._withdraw()
             self._close_own()
+            try:
+                self._own_zc = _zeroconf_on(selection)
+                self._advertise(self._own_zc, selection, self.server)
+            except Exception:
+                logger.warning("reason=advertiseMoveFailed", exc_info=True)
+                self._close_own()
+                self._watch.failed()
+                return False
+            except BaseException:
+                self._close_own()
+                self._watch.failed()
+                raise
+            self._watch.moved()
+            return True
+
+    def _watch_loop(self) -> None:
+        while not self._stopping.wait(self._interval):
+            try:
+                self.check_interfaces()
+            except Exception:
+                logger.warning("reason=interfaceCheckFailed", exc_info=True)
+
+    def stop(self) -> None:
+        """Withdraw the services (goodbye packets), end the interface checks
+        and close an owned ``Zeroconf``."""
+        self._stopping.set()
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None and watcher is not threading.current_thread():
+            watcher.join()
+        with self._lock:
+            self._active = False
+            try:
+                self._withdraw()
+            finally:
+                self._close_own()
+
+    def _withdraw(self) -> None:
+        zc = self._zc or self._own_zc
+        infos, self._infos = self._infos, []
+        if infos and zc is not None:
+            try:
+                _run(zc, core.async_unregister(zc, infos))
+            except Exception:
+                if zc is self._zc:
+                    raise
+                logger.warning("reason=withdrawFailed", exc_info=True)
 
     def _close_own(self) -> None:
         if self._own_zc is not None:
